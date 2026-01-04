@@ -14,11 +14,11 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
         return;
     }
 
-    for(int stride = blockDim.x/2 ; stride > 0 ; stride/=2){
-        if(tid  < stride ){
-            idata[tid] = idata[tid+stride];
+    for(int stride = blockDim.x/2;  stride > 0 ; stride/=2 ){
+        if(tid <  blockDim.x){
+            idata[tid]+= idata[tid+stride];
         }
-
+        
         __syncthreads();
     }
 

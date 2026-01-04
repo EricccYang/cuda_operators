@@ -6,6 +6,31 @@
 __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
 
     
+    int tid = threadIdx.x; 
+    int* idata = blockIdx.x *  blockDim.x + g_idata;
+    
+    
+    //这里可以*2，提前退出
+    if(tid *2  + blockIdx.x *  blockDim.x  >= n ){
+        return;
+    }
+
+    //对 不分化，后面的warp不干活 
+    for(int stride = 1;  stride < blockDim.x ; stride *= 2){
+        int  idx = tid* 2 * stride;
+        if(idx  < blockDix.x){
+            idata[idx] += idata[idx+ stride];
+        }
+        __syncthreads(); 
+    }
+
+    
+
+    if(tid == 0){
+        g_odata[blockIdx.x] = idata[0];
+    }
+
+
     
 }
 

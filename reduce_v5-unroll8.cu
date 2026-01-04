@@ -11,10 +11,9 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
     int idx = blockDim.x * (blockIdx.x* 8)+ tid;
     int* idata= g_idata+ blockDim.x * (blockIdx.x* 8);
 
-    
-    
+        
     //挪数据
-    if(idx + 7* blockDim.x < n ){
+    if(idx + 7 * blockDim.x < n ){
         int a1 = idata[tid + blockDim.x];
         int a2 = idata[tid + 2* blockDim.x];
         int a3 = idata[tid + 3* blockDim.x];
@@ -22,7 +21,7 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
         int a5 = idata[tid + 5* blockDim.x];
         int a6 = idata[tid + 6* blockDim.x];
         int a7 = idata[tid + 7* blockDim.x];
-        idata[tid] += a1+ a2 + a3 +a4 + a5 + a6+ a7;
+        idata[tid] += (a1+ a2 + a3 +a4 + a5 + a6+ a7);
     }
     __syncthreads();
 
@@ -34,13 +33,13 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
     }
 
     if(tid < 32){
-        volatile int* vmem= idata;
-        vmem[tid]+=vmem[tid+32];
-        vmem[tid]+=vmem[tid+16];
-        vmem[tid]+=vmem[tid+8];
-        vmem[tid]+=vmem[tid+4];
-        vmem[tid]+=vmem[tid+2];
-        vmem[tid]+=vmem[tid+1];
+        volitale int* vmem= idata;
+        idata[tid]+=idata[tid+32];
+        idata[tid]+=idata[tid+16];
+        idata[tid]+=idata[tid+8];
+        idata[tid]+=idata[tid+4];
+        idata[tid]+=idata[tid+2];
+        idata[tid]+=idata[tid+1];
     }
         
     if(tid == 0){

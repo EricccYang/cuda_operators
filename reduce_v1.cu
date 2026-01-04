@@ -8,23 +8,28 @@
 
 __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
 
-    int tid = threadIdx.x;
-    int* idata =  g_idata+ blockIdx.x* blockDim.x;
 
-    if( blockIdx.x* blockDim.x + tid >= n){
+    int tid = threadIdx.x; 
+    int* idata = blockIdx.x *  blockDim.x + g_idata;
+    
+    if(tid + blockIdx.x *  blockDim.x  >= n ){
         return;
     }
-
-    for(int stride = 1; stride < blockDim.x ; stride*= 2){
-        if(tid % (2* stride)    == 0){
-            idata[tid] += idata[tid+ stride];
+    //return的线程会怎么样？会
+    
+    for(int stride = 1;  stride < blockDim.x ; stride *= 2){
+        if(tid % stride *2 == 0){
+            idata[tid] += idata[tid + stride];
         }
-        __syncthreads();
+
+        __syncthreads(); //不同的warp在调度器上执行的时间点不一样，调度器资源有限
     }
 
     if(tid == 0){
         g_odata[blockIdx.x] = idata[0];
     }
+
+
 
 }
 

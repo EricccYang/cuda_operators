@@ -4,20 +4,17 @@
 
 
 //把后一个block的数据先挪到前一个block，一个线程block管两个数据block的意思
-
 __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
 
-    int tid =  threadIdx.x;
-    int* idata= g_idata+ blockDim.x * (blockIdx.x* 2);
-
-    //int idx = blockDim.x * (blockIdx.x* 2) + tid;
-
-    if( tid +  blockDim.x + blockDim.x * (blockIdx.x* 2) >=n){
-        return;
-    }
     
-    //挪数据
-    idata[tid] += idata[tid + blockDim.x];
+    int tid = threadIdx.x;
+    int data_index =  blockDim.x* blockIdx.x *2 + tid;
+
+
+    int* idata = g_idata + blockDim.x* blockIdx.x *2;
+    if(data_index + blockDim.x < n){
+        idata[data_index]+= idata[data_index+blockDim.x];
+    }
     __syncthreads();
 
     for(int stride = blockDim.x /2; stride > 0 ; stride/=2 ){
