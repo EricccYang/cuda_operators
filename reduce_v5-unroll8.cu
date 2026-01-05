@@ -120,7 +120,8 @@ int main(){
     int grid_size =  (n+block.x-1)/block.x;
     dim3 grid(grid_size/8);
 
-
+    //warmup
+    
     cudaEvent_t start, end;
     cudaEventCreate(&start);
     cudaEventCreate(&end);
@@ -137,7 +138,7 @@ int main(){
 
     cudaMemcpy(gpuRef, d_B, nBytes, cudaMemcpyDeviceToHost);
     int gpu_res  = 0 ;
-    for(int i= 0; i < grid_size; i++){
+    for(int i= 0; i < grid_size/8; i++){
         //printf("  gpu res %d \n", gpuRef[i] );
         gpu_res+= gpuRef[i];
     }

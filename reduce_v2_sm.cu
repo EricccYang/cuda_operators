@@ -120,7 +120,8 @@ int main(){
     int grid_size =  (n+block.x-1)/block.x;
     dim3 grid(grid_size);
 
-
+    reduce<<<grid,block>>>(d_A, d_B, n);
+    
     cudaEvent_t start, end;
     cudaEventCreate(&start);
     cudaEventCreate(&end);
