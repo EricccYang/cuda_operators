@@ -126,7 +126,6 @@ int main(){
     //warmup
     reduce<<<grid,block>>>(d_A, d_B, n);
 
-
     cudaEvent_t start, end;
     cudaEventCreate(&start);
     cudaEventCreate(&end);
