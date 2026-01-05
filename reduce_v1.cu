@@ -3,8 +3,6 @@
 
 
 
-//多个block之间是不能同步的， 一个block可能多个sm，
-
 
 __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
 
