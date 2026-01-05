@@ -56,7 +56,7 @@ __global__ void sgemm_V3(
     float r_b_load[4];
     
     
-    //先load好一个    load在1里面
+    //先load好一个    load在0里面
     {
         int a_gmem_m =  by * BM + a_smem_m;
         int a_gmem_k =  0 * BK + a_smem_k;
@@ -74,7 +74,6 @@ __global__ void sgemm_V3(
         s_a[0][a_smem_k+2][a_smem_m] = r_a_load[2];
         s_a[0][a_smem_k+3][a_smem_m] = r_a_load[3];
         FLOAT4(s_b[0][b_smem_k][b_smem_n]) = FLOAT4(r_b_load[0]);
-        
 
     }
     __syncthreads();
@@ -86,11 +85,11 @@ __global__ void sgemm_V3(
 
     //再开始for循环
     int step = (K+BK-1)/BK ;
-    for(int i =0; i <step -1  ;i++){
+    for(int i =1; i <step   ;i++){
 
-        int load_bk = i+1;
-        int s_load_index = (i+1)%2;
-        int s_compute_index = i%2;
+        int load_bk = i;
+        int s_load_index = load_bk % 2;
+        int s_compute_index = (i-1)%2;
 
         //load
         int a_gmem_m =  by * BM + a_smem_m;
@@ -153,12 +152,11 @@ __global__ void sgemm_V3(
         }
     }
 
-    
     //然后写回数据
     #pragma unroll
     for(int i = 0; i < TM/2 ;i++){
         int c_gmem_m = blockIdx.y * BM + threadIdx.y * TM/2 + i;
-        int c_gmem_n = blockIdx.x * BN + threadIdx.x * TN;
+        int c_gmem_n = blockIdx.x * BN + threadIdx.x * TN/2;
         int c_gmem_addr =  c_gmem_m * N + c_gmem_n;
         FLOAT4(c[c_gmem_addr] ) = FLOAT4( r_c[i][0] );
         FLOAT4(c[c_gmem_addr + BN/2 ] ) = FLOAT4( r_c[i][4] ); 
@@ -166,7 +164,7 @@ __global__ void sgemm_V3(
     #pragma unroll
     for(int i = 0; i < TM/2 ;i++){
         int c_gmem_m = blockIdx.y * BM + threadIdx.y * TM/2 + i + BM/2 ;
-        int c_gmem_n = blockIdx.x * BN + threadIdx.x * TN;
+        int c_gmem_n = blockIdx.x * BN + threadIdx.x * TN/2;
         int c_gmem_addr =  c_gmem_m * N + c_gmem_n;
         FLOAT4(c[c_gmem_addr] ) = FLOAT4( r_c[i + TM/2 ][0] );
         FLOAT4(c[c_gmem_addr + BN/2 ] ) = FLOAT4( r_c[ i+ TM / 2 ][4] ); 

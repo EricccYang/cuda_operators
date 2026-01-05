@@ -18,7 +18,7 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
     //对 不分化，后面的warp不干活 
     for(int stride = 1;  stride < blockDim.x ; stride *= 2){
         int  idx = tid* 2 * stride;
-        if(idx  < blockDix.x){
+        if(idx  < blockDim.x){
             idata[idx] += idata[idx+ stride];
         }
         __syncthreads(); 

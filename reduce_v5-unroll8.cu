@@ -13,16 +13,11 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
 
         
     //挪数据
-    if(idx + 7 * blockDim.x < n ){
-        int a1 = idata[tid + blockDim.x];
-        int a2 = idata[tid + 2* blockDim.x];
-        int a3 = idata[tid + 3* blockDim.x];
-        int a4 = idata[tid + 4* blockDim.x];
-        int a5 = idata[tid + 5* blockDim.x];
-        int a6 = idata[tid + 6* blockDim.x];
-        int a7 = idata[tid + 7* blockDim.x];
-        idata[tid] += (a1+ a2 + a3 +a4 + a5 + a6+ a7);
+    #pragma unroll
+    for(int iter = 1 ;iter < 8 ; iter++ ){
+        idata[tid] += idata[tid + iter* blockDim.x];
     }
+
     __syncthreads();
 
     for(int stride = blockDim.x /2; stride > 32 ; stride/=2 ){
@@ -32,14 +27,15 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
         __syncthreads();
     }
 
+    //为啥是这个来着？
     if(tid < 32){
-        volitale int* vmem= idata;
-        idata[tid]+=idata[tid+32];
-        idata[tid]+=idata[tid+16];
-        idata[tid]+=idata[tid+8];
-        idata[tid]+=idata[tid+4];
-        idata[tid]+=idata[tid+2];
-        idata[tid]+=idata[tid+1];
+        volatile int* vmem = idata;
+        vmem[tid]+=vmem[tid+32];
+        vmem[tid]+=vmem[tid+16];
+        vmem[tid]+=vmem[tid+8];
+        vmem[tid]+=vmem[tid+4];
+        vmem[tid]+=vmem[tid+2];
+        vmem[tid]+=vmem[tid+1];
     }
         
     if(tid == 0){
@@ -94,7 +90,7 @@ int main(){
     cudaSetDevice(dev);
 
     int block_size = 512;
-    int n = 2 << 23;
+    int n = 2 << 24;
 
     int total = ((n+ block_size -1)/block_size) * block_size;
     printf(" total is %d \n" ,total);

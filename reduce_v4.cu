@@ -13,7 +13,7 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
 
     int* idata = g_idata + blockDim.x* blockIdx.x *2;
     if(data_index + blockDim.x < n){
-        idata[data_index]+= idata[data_index+blockDim.x];
+        idata[tid]+= idata[tid+blockDim.x];
     }
     __syncthreads();
 

@@ -15,7 +15,7 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
     }
 
     for(int stride = blockDim.x/2;  stride > 0 ; stride/=2 ){
-        if(tid <  blockDim.x){
+        if(tid <  stride){
             idata[tid]+= idata[tid+stride];
         }
         
