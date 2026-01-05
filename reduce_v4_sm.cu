@@ -12,7 +12,7 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
     int data_index =  blockDim.x* blockIdx.x *2 + tid;
 
 
-    __shared__  s_d[BLOCK_SIZE];
+    __shared__  int s_d[BLOCK_SIZE];
     s_d[tid] =  g_idata[data_index];
     // if(){
     s_d[tid] += g_idata[data_index+ blockDim.x];
