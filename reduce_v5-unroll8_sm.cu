@@ -123,9 +123,6 @@ int main(){
     dim3 grid(grid_size/8);
 
 
-    //warmup
-    reduce<<<grid,block>>>(d_A, d_B, n);
-
     cudaEvent_t start, end;
     cudaEventCreate(&start);
     cudaEventCreate(&end);
