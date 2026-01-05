@@ -31,7 +31,7 @@ __global__  void RMSNorm(float* g_idata, unsigned int n){
     s_data[tid] *= cur;
 
     __syncthreads();
-    
+
     //然后开始规约
     for(int stride = blockDim.x /2; stride > 0 ; stride/=2 ){
         if(tid < stride){
@@ -40,14 +40,13 @@ __global__  void RMSNorm(float* g_idata, unsigned int n){
         __syncthreads();
     }
 
-    //和
+    //加和
     if(tid == 0){
         s_data[0] = sqrtf(s_data[0] / blockDim.x);
     }
     __syncthreads();
 
     g_idata[data_index]  = cur / s_data[0];
-
 }
 
 
@@ -60,44 +59,61 @@ void initData(float *ip, int size){
 }
 
 
-// CPU版本的RMSNorm计算函数 - 验证GPU结果
-void RMSNormCPU(float *input, float *output, unsigned int N){
-    // 第一步：计算平方和
-    float sum_sq = 0.0f;
-    for(int i = 0; i < N; i++){
-        sum_sq += input[i] * input[i];
-    }
+// CPU版本的RMSNorm计算函数 - 按BLOCK_SIZE分组
+void RMSNormCPU(float *input, float *output, unsigned int N, const int block_size){
+    int num_blocks = (N + block_size - 1) / block_size;
     
-    // 第二步：计算RMS值
-    float rms = sqrtf(sum_sq / N);
-    
-    // 第三步：归一化
-    for(int i = 0; i < N; i++){
-        output[i] = input[i] / rms;
+    // 按block分组处理
+    for(int b = 0; b < num_blocks; b++){
+        int start = b * block_size;
+        int end = (b + 1) * block_size < N ? (b + 1) * block_size : N;
+        int actual_size = end - start;
+        
+        // 第一步：计算该block内的平方和
+        float sum_sq = 0.0f;
+        for(int i = start; i < end; i++){
+            sum_sq += input[i] * input[i];
+        }
+        
+        // 第二步：计算该block的RMS值
+        float rms = sqrtf(sum_sq / actual_size);
+        
+        // 第三步：对该block内的数据进行归一化
+        for(int i = start; i < end; i++){
+            output[i] = input[i] / rms;
+        }
     }
 }
 
-// 检查RMSNorm结果
-void checkRMSNormResult(float *hostRef, float *gpuRef, const int N){
+// 检查RMSNorm结果 - 按BLOCK_SIZE分组
+void checkRMSNormResult(float *hostRef, float *gpuRef, const int N, const int block_size){
     float epsilon = 1.0E-5;  // 允许的误差范围
     int mismatch_count = 0;
     float max_diff = 0.0f;
+    int num_blocks = (N + block_size - 1) / block_size;
     
-    for(int i = 0; i < N; i++){
-        float diff = fabs(hostRef[i] - gpuRef[i]);
-        if(diff > max_diff){
-            max_diff = diff;
-        }
-        if(diff > epsilon){
-            if(mismatch_count < 10){  // 只打印前10个不匹配的结果
-                printf("Mismatch at index %d: cpu %.6f, gpu %.6f, diff %.6e\n", 
-                       i, hostRef[i], gpuRef[i], diff);
+    // 按block分组检查
+    for(int b = 0; b < num_blocks; b++){
+        int start = b * block_size;
+        int end = (b + 1) * block_size < N ? (b + 1) * block_size : N;
+        
+        for(int i = start; i < end; i++){
+            float diff = fabs(hostRef[i] - gpuRef[i]);
+            if(diff > max_diff){
+                max_diff = diff;
             }
-            mismatch_count++;
+            if(diff > epsilon){
+                if(mismatch_count < 10){  // 只打印前10个不匹配的结果
+                    printf("Block %d, Mismatch at index %d: cpu %.6f, gpu %.6f, diff %.6e\n", 
+                           b, i, hostRef[i], gpuRef[i], diff);
+                }
+                mismatch_count++;
+            }
         }
     }
     
     printf("=== RMSNorm Verification ===\n");
+    printf("Total blocks: %d (block_size: %d)\n", num_blocks, block_size);
     printf("Max difference: %.6e\n", max_diff);
     if(mismatch_count == 0){
         printf("✓ All values match!\n");
@@ -150,7 +166,7 @@ int main(){
 
     // 先用CPU计算参考结果
     printf("\n=== Computing CPU Reference ===\n");
-    RMSNormCPU(h_A, hostRef, n);
+    RMSNormCPU(h_A, hostRef, n, block_size);
     printf("CPU reference computed.\n");
 
     // 运行GPU核函数
@@ -174,7 +190,7 @@ int main(){
     
     // 验证结果
     printf("\n");
-    checkRMSNormResult(hostRef, gpuRef, n);
+    checkRMSNormResult(hostRef, gpuRef, n, block_size);
 
 
     cudaFree(d_A);
