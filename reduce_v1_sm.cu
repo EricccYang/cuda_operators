@@ -10,7 +10,7 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
 
 
     int bx = blockDim.x ;
-    __share__ int s_d[BLOCK_SIZE];
+    __shared__ int s_d[BLOCK_SIZE];
 
     int tid = threadIdx.x; 
     int* idata = blockIdx.x *  blockDim.x + g_idata;
@@ -22,6 +22,7 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
     //return的线程会怎么样？
 
     s_d[tid] = idata[tid];
+    __syncthreads();
     for(int stride = 1;  stride < blockDim.x ; stride *= 2){
         if(tid % (stride *2) == 0){
             s_d[tid] += s_d[tid + stride];
@@ -84,7 +85,7 @@ int main(){
     int dev =0;
     cudaSetDevice(dev);
 
-    int block_size = BLOCK_SIZE
+    int block_size = BLOCK_SIZE;
     int n = 2 << 24;
 
     int total = ((n+ block_size -1)/block_size) * block_size;

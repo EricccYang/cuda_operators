@@ -15,15 +15,17 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
 
     __shared__ int s_d[BLOCK_SIZE]; 
     
-    
+
+    s_d[tid] = idata[tid];
+    __syncthreads();
+
+
     //这里可以*2，提前退出
     if(tid *2  + blockIdx.x *  blockDim.x  >= n ){
         return;
     }
 
-    s_d[tid]= idata[tid];
 
-    //对 不分化，后面的warp不干活 
     for(int stride = 1;  stride < blockDim.x ; stride *= 2){
         int  idx = tid* 2 * stride;
         if(idx  < blockDim.x){
@@ -87,7 +89,7 @@ int main(){
     int dev =0;
     cudaSetDevice(dev);
 
-    int block_size = 512;
+    int block_size = BLOCK_SIZE;
     int n = 2 << 24;
 
     int total = ((n+ block_size -1)/block_size) * block_size;
