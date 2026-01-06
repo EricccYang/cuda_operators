@@ -4,6 +4,7 @@
 
 
 #define BLOCK_SIZE 512
+#define DATA_PER_THREAD 4
 
 //出入结果是一样的
 //传入M*K
@@ -12,40 +13,59 @@
 __global__  void RMSNorm(float* g_idata, unsigned int n){
 
     
-    //一个block管一行，一个线程管一个数 版本
-    //512 数 BLOCK_SIZE = 512， 512线程 16warp版本  
-    //先 乘方， 再规约
-    //寄存器存什么？shared mem存什么？
-    //寄存器存 单个值，shared做规约？ 
-    int tid = threadIdx.x;
-    int data_index =  blockDim.x* blockIdx.x +tid;
+    //一个block管BLOCK_SIZE* DATA_PER_THREAD个数据
 
-    if(data_index >= n){
+    int tid = threadIdx.x;
+    int data_begin =  blockDim.x* blockIdx.x * DATA_PER_THREAD;
+    
+    int data_index_first_block =  data_begin+ tid;
+
+    //其实有问题，先不管了, 理论上外部需要保证能整除
+    if(data_index_first_block >= n){
         return;
     }
 
-    __shared__ float s_data[BLOCK_SIZE];
-    s_data[tid] = g_idata[data_index];
-    float cur = s_data[tid];
-    s_data[tid] *= cur;
 
-    __syncthreads();
+    float r_data[DATA_PER_THREAD];
+    float squ_sum[DATA_PER_THREAD] = {0.0};
+    //线程负责多少数据，sm就得多大，1K数据*4 最多20左右的block   ,  100K/SM  
+    //一个block最多1～2K个数据差不多了，再多没有那么的sm
+    //2k数据，8kBytes内存/block，   512t/block, 1536/512= 3个block，24kB,应该还是能装下 sm应该还没有问题
+    //其实不用，sm能少则少，直接寄存器存了，sm只用作共享数据就行
+    __shared__ float s_data[BLOCK_SIZE];
+
+    #pragma unroll
+    for(int i= 0 ;i <DATA_PER_THREAD ;i++ ){
+        r_data[i] = g_idata[data_index_first_block + i* BLOCK_SIZE];
+        squ_sum[i] += r_data[i]  *  r_data[i];
+    }
+    #pragma unroll
+    for(int i= 1 ; i < DATA_PER_THREAD; i++){
+        squ_sum[0] += squ_sum[i];
+    }
+    s_data[tid] = squ_sum[0];
+
+    __syncthreads(); //只要碰sm就得sync
 
     //然后开始规约
-    for(int stride = blockDim.x /2; stride > 0 ; stride/=2 ){
+    for(int stride =  blockDim.x /2 ; stride > 0 ; stride/=2 ){
         if(tid < stride){
             s_data[tid]+= s_data[tid+stride];
         }
         __syncthreads();
     }
 
-    //加和
+    //加和， 这里一个线程除一下应该比所有线程都除要好
     if(tid == 0){
-        s_data[0] = sqrtf(s_data[0] / blockDim.x);
+        s_data[0] = sqrtf( s_data[0] / (DATA_PER_THREAD * BLOCK_SIZE) );
     }
     __syncthreads();
 
-    g_idata[data_index]  = cur / s_data[0];
+    #pragma unroll
+    for(int i= 0 ;i < DATA_PER_THREAD; i++){
+        g_idata[data_index_first_block + i * BLOCK_SIZE  ] =  r_data[i]/s_data[0];
+    }
+
 }
 
 
@@ -163,7 +183,7 @@ int main(){
 
     dim3 block(block_size);
     int grid_size =  (n+block.x-1)/block.x;
-    dim3 grid(grid_size);
+    dim3 grid(grid_size/DATA_PER_THREAD);
 
 
     // 先用CPU计算参考结果
@@ -194,7 +214,7 @@ int main(){
     
     // 验证结果
     printf("\n");
-    checkRMSNormResult(hostRef, gpuRef, n, block_size);
+    checkRMSNormResult(hostRef, gpuRef, n, BLOCK_SIZE * DATA_PER_THREAD);
 
 
     cudaFree(d_A);
