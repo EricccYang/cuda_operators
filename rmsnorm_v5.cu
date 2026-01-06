@@ -47,29 +47,49 @@ __global__  void RMSNorm(float* g_idata, unsigned int n){
 
     __syncthreads(); //只要碰sm就得sync
 
+
+
     //然后开始规约
-    for(int stride =  blockDim.x /2 ; stride > 32 ; stride/=2 ){
-        if(tid < stride){
-            s_data[tid]+= s_data[tid+stride];
+    if(BLOCK_SIZE >= 512 ){
+        if(tid < 256){
+            s_data[tid]+= s_data[tid+256];
+        }
+        __syncthreads();
+    }
+    if(BLOCK_SIZE >= 256 ){
+        if(tid < 128){
+            s_data[tid]+= s_data[tid+128];
+        }
+        __syncthreads();
+    }
+    if(BLOCK_SIZE >= 128 ){
+        if(tid < 64){
+            s_data[tid]+= s_data[tid+64];
+        }
+        __syncthreads();
+    }
+    if(BLOCK_SIZE >= 64 ){
+        if(tid < 32){
+            s_data[tid]+= s_data[tid+32];
         }
         __syncthreads();
     }
 
-    //stride == 32的情况  每个线程都做这些事
-    if(tid < 32){
-        volatile float* vmem = s_data;
-        if(tid < 32)vmem[tid]+= vmem[tid+32];
-        if(tid < 16)vmem[tid]+= vmem[tid+16];
-        if(tid < 8)vmem[tid]+= vmem[tid+8];
-        if(tid < 4)vmem[tid]+= vmem[tid+4];
-        if(tid < 2)vmem[tid]+= vmem[tid+2];
-        if(tid < 1)vmem[tid]+= vmem[tid+1];
-    }
 
+    //stride == 32的情况  每个线程都做这些事
+    float sum = s_data[tid];
+    if(tid < 32){
+        sum += __shfl_down_sync(0xffffffff, sum, 16);
+        sum += __shfl_down_sync(0xffffffff, sum, 8);
+        sum += __shfl_down_sync(0xffffffff, sum, 4);
+        sum += __shfl_down_sync(0xffffffff, sum, 2);
+        sum += __shfl_down_sync(0xffffffff, sum, 1);
+    }
+    
 
     //加和， 这里一个线程除一下应该比所有线程都除要好
     if(tid == 0){
-        s_data[0] = sqrtf( s_data[0] / (DATA_PER_THREAD * BLOCK_SIZE) );
+        s_data[0] = sqrtf( sum / (DATA_PER_THREAD * BLOCK_SIZE) );
     }
     __syncthreads();
 

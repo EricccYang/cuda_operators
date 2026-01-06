@@ -7,6 +7,9 @@ source_files=(
 source_files_sm=(
     "rmsnorm_v1"
     "rmsnorm_v2"
+    "rmsnorm_v3"
+    "rmsnorm_v4"
+    "rmsnorm_v5"
 )
 
 # 函数：编译CUDA文件
