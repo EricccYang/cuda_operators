@@ -48,17 +48,13 @@ __global__  void RMSNorm(float* g_idata, unsigned int n, unsigned int d){
     }
     __syncthreads();
 
-    //用一个warp规约sm      其实也能shuf
-
-    
-    for(int stride =   blockDim.y/2 ; stride > 0 ; stride/=2){
-        //用第一个warp的threads就可以
-        if(tid < stride){
-            sm[tid] += sm[tid+ stride];
+    //用一个warp规约sm - 只让每个warp的第一个线程参与
+    for(int stride = blockDim.y/2 ; stride > 0 ; stride/=2){
+        if(tx == 0 && ty < stride){
+            sm[ty] += sm[ty + stride];
         }
-       
+        __syncthreads();
     }
-    __syncthreads();
     
 
     float reduced =  sqrtf( sm[0] / (blockDim.x * DATA_PER_THREAD*  blockDim.y));
