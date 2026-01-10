@@ -43,7 +43,7 @@ __global__ void SingleHeadAttensionKernel(
 
     const int K = 1024;
     const int BM =2;
-    const int Bk = 2;
+    const int BK = 2;
     
 
     int tx= threadIdx.x;
