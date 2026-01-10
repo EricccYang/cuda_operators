@@ -38,7 +38,12 @@ void cpuSgemm(
 //K = 1024 BM =2; BK = 2;
 __global__ void SingleHeadAttensionKernel(
     float * __restrict__ q, float * __restrict__ k, float * __restrict__ v,
-    const int seq_len, const int d, const int M, const int K, const int BM, const int BK) {
+    const int seq_len, const int d, const int M ) {
+
+
+    const int K = 1024;
+    const int BM =2;
+    const int Bk = 2;
     
 
     int tx= threadIdx.x;
@@ -200,7 +205,7 @@ int main(void) {
     printf("\nKernal = sgemm_V2\n");
     const int outer_repeat = 10, inner_repeat = 1;
     const int BM =  2 , BN = 1024 , TM = 1, TN =  4;          //512线程load 2k个数据，2*128, 2*2的结果矩阵
-    void (*gpuSgemm) (float *, float *, float *, const int, const int, const int) = sgemm_V2;
+    void (*gpuSgemm) (float *, float *, float *, const int, const int, const int) = SingleHeadAttensionKernel;
 
     {
         const int M = 512, N = 512, K = 512;
