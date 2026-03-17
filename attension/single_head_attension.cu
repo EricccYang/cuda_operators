@@ -115,7 +115,7 @@ __global__ void SingleHeadAttensionKernel(
     
     // load partial q - 并行加载
     if(load_q_gm_m < seq_len && ty < BM){
-        for(int j = 0; j < data_per_thread && load_q_sm_k + j < d && load_q_sm_k + j < 512; j++){
+        for(int j = 0; j < data_per_thread && load_q_sm_k + j < d; j++){
             s_q[load_q_sm_m][load_q_sm_k + j] = q[load_q_g_addr + j];
         }
     }
@@ -126,13 +126,11 @@ __global__ void SingleHeadAttensionKernel(
     __shared__ float block_denom[BM];
     __shared__ float block_max[BM];
     __shared__ float new_max[BM];
-    __shared__ float acc[BM][512];
     
-    // 初始化 - 需要处理 d > 512 的情况
-    for(int idx = tx; idx < 512 && idx < d; idx += blockDim.x){
-        if(ty < BM){
+    // 初始化输出
+    if(ty < BM){
+        for(int idx = tx; idx < d; idx += blockDim.x){
             s_out[ty][idx] = 0.0f;
-            acc[ty][idx] = 0.0f;
         }
     }
     if(ty < BM && tx == 0){
@@ -146,11 +144,10 @@ __global__ void SingleHeadAttensionKernel(
         // 1. load partial k (K是转置存储的，所以是 d x seq_len)
         int load_k_gm_n = step_idx * BK;  // seq_len维度
         for(int k_idx = 0; k_idx < BK && load_k_gm_n + k_idx < seq_len; k_idx++){
-            int load_k_sm_n = k_idx;
-            for(int d_idx = tx; d_idx < d && d_idx < 512; d_idx += blockDim.x){  // 限制在512范围内
-                if(ty == 0 && load_k_sm_n < BK){
+            if(ty == 0){
+                for(int d_idx = tx; d_idx < d; d_idx += blockDim.x){
                     // k是转置存储：k[d_idx * seq_len + load_k_gm_n + k_idx]
-                    s_k[load_k_sm_n][d_idx] = k[d_idx * seq_len + load_k_gm_n + k_idx];
+                    s_k[k_idx][d_idx] = k[d_idx * seq_len + load_k_gm_n + k_idx];
                 }
             }
         }
@@ -170,32 +167,30 @@ __global__ void SingleHeadAttensionKernel(
         
         // 计算矩阵乘法：Q[i][k] * K^T[k][j] = Q[i][k] * K[j][k]
         // Q是当前block的行，K是当前step的行
-        if(ty < BM && tx < BK && step_idx * BK + tx < seq_len){
-            float sum = 0.0f;
-            // 确保k不超过d和512
-            int max_k = (d < 512) ? d : 512;
-            for(int k = 0; k < max_k && k < d; k++){
-                // s_q[ty][k] 是 Q[current_row + ty][k]
-                // s_k[tx][k] 是 K[step_idx*BK + tx][k] (转置存储)
-                if(k < 512){  // 额外的边界检查
+        if(ty < BM && tx < BK){
+            if(step_idx * BK + tx < seq_len){
+                float sum = 0.0f;
+                int max_k = (d < 512) ? d : 512;
+                for(int k = 0; k < max_k; k++){
                     sum += s_q[ty][k] * s_k[tx][k];
                 }
+                r_t[ty][tx] = sum / sqrtf((float)d);
+                tmp[ty][tx] = r_t[ty][tx];
+            } else {
+                // 超出seq_len的位置初始化为负无穷
+                r_t[ty][tx] = -1e30f;
+                tmp[ty][tx] = -1e30f;
             }
-            r_t[ty][tx] = (d > 0) ? sum / sqrtf((float)d) : 0.0f;  // 避免除零
-            tmp[ty][tx] = r_t[ty][tx];
         }
         __syncthreads();
 
-        // 求最大值
-        if(ty < BM && tx < BK && step_idx * BK + tx < seq_len){
-            for(int stride = BK / 2; stride > 0; stride /= 2){
-                if(tx < stride && step_idx * BK + tx + stride < seq_len){
-                    tmp[ty][tx] = fmaxf(tmp[ty][tx + stride], tmp[ty][tx]);
-                }
-                __syncthreads();
+        // 求最大值 - reduction必须让所有线程参与同步
+        for(int stride = BK / 2; stride > 0; stride /= 2){
+            if(ty < BM && tx < stride && step_idx * BK + tx + stride < seq_len){
+                tmp[ty][tx] = fmaxf(tmp[ty][tx + stride], tmp[ty][tx]);
             }
+            __syncthreads();
         }
-        __syncthreads();
 
         // 得出最大值
         if(ty < BM && tx == 0 && step_idx * BK < seq_len){
@@ -204,21 +199,25 @@ __global__ void SingleHeadAttensionKernel(
         __syncthreads();
 
         // 根据最大值求exp分数, 计算exp_score_sum
-        if(ty < BM && tx < BK && step_idx * BK + tx < seq_len){
-            exp_score[ty][tx] = expf(r_t[ty][tx] - new_max[ty]);
-            exp_score_sum[ty][tx] = exp_score[ty][tx];
-        }
-        __syncthreads();
-        
-        if(ty < BM && tx < BK && step_idx * BK + tx < seq_len){
-            for(int stride = BK / 2; stride > 0; stride /= 2){
-                if(tx < stride && step_idx * BK + tx + stride < seq_len){
-                    exp_score_sum[ty][tx] += exp_score_sum[ty][tx + stride];
-                }
-                __syncthreads();
+        if(ty < BM && tx < BK){
+            if(step_idx * BK + tx < seq_len){
+                exp_score[ty][tx] = expf(r_t[ty][tx] - new_max[ty]);
+                exp_score_sum[ty][tx] = exp_score[ty][tx];
+            } else {
+                // 超出seq_len的位置设为0
+                exp_score[ty][tx] = 0.0f;
+                exp_score_sum[ty][tx] = 0.0f;
             }
         }
         __syncthreads();
+        
+        // Reduction求和 - 所有线程参与同步
+        for(int stride = BK / 2; stride > 0; stride /= 2){
+            if(ty < BM && tx < stride && step_idx * BK + tx + stride < seq_len){
+                exp_score_sum[ty][tx] += exp_score_sum[ty][tx + stride];
+            }
+            __syncthreads();
+        }
         
         // block_denom更新
         if(ty < BM && tx == 0 && step_idx * BK < seq_len){
@@ -229,48 +228,48 @@ __global__ void SingleHeadAttensionKernel(
         // 3. load partial v
         int load_v_gm_m = step_idx * BK;  // seq_len维度
         for(int v_idx = 0; v_idx < BK && load_v_gm_m + v_idx < seq_len; v_idx++){
-            int load_v_sm_m = v_idx;
-            for(int d_idx = tx; d_idx < d && d_idx < 512; d_idx += blockDim.x){  // 限制在512范围内
-                if(ty == 0 && load_v_sm_m < BK){
+            if(ty == 0){
+                for(int d_idx = tx; d_idx < d; d_idx += blockDim.x){
                     // v是 M x N: v[load_v_gm_m + v_idx][d_idx]
-                    s_v[load_v_sm_m][d_idx] = v[(load_v_gm_m + v_idx) * d + d_idx];
+                    s_v[v_idx][d_idx] = v[(load_v_gm_m + v_idx) * d + d_idx];
                 }
             }
         }
         __syncthreads();
 
-        // 4. compute exp_score @ V: acc[BM][d]
-        if(tx < d && tx < 512 && ty < BM){  // 添加边界检查
-            float sum = 0.0f;
-            for(int j = 0; j < BK && step_idx * BK + j < seq_len && j < BK; j++){
-                if(j < BK && tx < 512){  // 额外边界检查
-                    sum += exp_score[ty][j] * s_v[j][tx];
-                }
+        // 4. compute exp_score @ V 并更新输出
+        // Flash Attention核心：new_out = old_out * exp(old_max - new_max) + exp_score @ V
+        if(tx < d && ty < BM){
+            // 计算当前block的 exp_score @ V
+            float current_result = 0.0f;
+            for(int j = 0; j < BK && step_idx * BK + j < seq_len; j++){
+                current_result += exp_score[ty][j] * s_v[j][tx];
             }
-            acc[ty][tx] += sum;
-            new_block_out[ty][tx] = s_out[ty][tx] * expf(block_max[ty] - new_max[ty]) + acc[ty][tx];
+            
+            // Flash Attention更新公式
+            // new_out = old_out * exp(old_max - new_max) + current_result
+            new_block_out[ty][tx] = s_out[ty][tx] * expf(block_max[ty] - new_max[ty]) + current_result;
         }
         __syncthreads();
 
-        // 5. update: softmax reduce
-        if(tx < d && tx < 512 && ty < BM){  // 添加边界检查
-            if(tx == 0){  // 只在第一个线程更新block_max
+        // 5. 更新状态：将new_block_out拷贝到s_out，更新block_max
+        if(tx < d && ty < BM){
+            s_out[ty][tx] = new_block_out[ty][tx];
+            if(tx == 0){
                 block_max[ty] = new_max[ty];
             }
-            s_out[ty][tx] = new_block_out[ty][tx];
         }
         __syncthreads();
     } 
 
 
     // 最后归一化并写回全局内存
-    if(tx < d && tx < 512 && ty < BM){  // 添加边界检查
+    if(tx < d && ty < BM){
         int output_row = blockDim.y * blockIdx.y + ty;
-        if(output_row < seq_len && block_denom[ty] > 1e-10f){  // 避免除零，使用更小的阈值
+        if(output_row < seq_len){
+            // Flash Attention最终归一化：output = accumulated_output / denominator
             float normalized = s_out[ty][tx] / block_denom[ty];
             out_put[output_row * d + tx] = normalized;
-        } else if(output_row < seq_len){
-            out_put[output_row * d + tx] = 0.0f;  // 如果denom为0，输出0
         }
     }
 }
