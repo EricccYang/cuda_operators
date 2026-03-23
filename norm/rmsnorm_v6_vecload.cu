@@ -2,43 +2,93 @@
 #include <stdio.h>
 
 #define BLOCK_SIZE 512
+#define DATA_PER_THREAD 4
 
 
 
+#define LOADFLOAT4(pointer) (reinterpret_cast<float4*>(&(pointer))[0])
 
-// blocksize = embedding size
-// gridsize = number of embeddings
-// 一个线程负责一个数据,通过shared memory求和版  v1
+
+
+__global__  __forceinline__ float warp_reduce(float sum, int blockSize){
+  if(blockSize >= 32) sum += __shfl_down_sync(0xffffffff, sum, 16);
+  if(blockSize >= 16) sum+= __shfl_down_sync(0xffffffff,sum,8);
+  if(blockSize >= 8) sum+= __shfl_down_sync(0xffffffff,sum,4);
+  if(blockSize >= 4) sum+= __shfl_down_sync(0xffffffff,sum,2);
+  if(blockSize >= 2) sum+= __shfl_down_sync(0xffffffff,sum,1);
+  return sum;
+}
+
+
+//vector load版本 ,shfl
 __global__ void RMSNorm(float *g_idata, unsigned int n) {
 
   int tid = threadIdx.x;
-  int data_index = threadIdx.x + blockIdx.x * blockDim.x;
+  int data_begin = blockDim.x * blockIdx.x * DATA_PER_THREAD;
 
-  if (data_index >= n) {
+  int data_index_first_block = data_begin + tid;
+
+  if (data_index_first_block >= n) {
     return;
   }
 
-  float cur = g_idata[data_index];
+  float r_data[DATA_PER_THREAD];
+  float r_sum = 0.f;
+
 
   __shared__ float s_data[BLOCK_SIZE];
-  s_data[tid] = cur * cur;
 
-  __syncthreads(); // for different warp
+  LOADFLOAT4(r_data[0]) = LOADFLOAT4(g_idata[data_begin+tid*DATA_PER_THREAD]);
+  #pragma unroll
+  for(int i= 0 ;i < DATA_PER_THREAD;i++){
+    r_sum+= r_data[i]*r_data[i];
+  }
+  s_data[tid] = r_sum;
+  __syncthreads();
 
-  for (int stride = blockDim.x / 2; stride > 0; stride /= 2) {
-    if (tid < stride) {
-      s_data[tid] += s_data[tid + stride];
+
+
+  if (BLOCK_SIZE >= 512) {
+    if (tid < 256) {
+      s_data[tid] += s_data[tid + 256];
     }
-    // 这里就需要sync
+    __syncthreads();
+  }
+  if (BLOCK_SIZE >= 256) {
+    if (tid < 128) {
+      s_data[tid] += s_data[tid + 128];
+    }
+    __syncthreads();
+  }
+  if (BLOCK_SIZE >= 128) {
+    if (tid < 64) {
+      s_data[tid] += s_data[tid + 64];
+    }
+    __syncthreads();
+  }
+  if (BLOCK_SIZE >= 64) {
+    if (tid < 32) {
+      s_data[tid] += s_data[tid + 32];
+    }
     __syncthreads();
   }
 
+  // stride == 32的情况  每个线程都做这些事
+  float sum = s_data[tid];
+  sum = warp_reduce(sum, 32);
+
+  // 加和， 这里一个线程除一下应该比所有线程都除要好
   if (tid == 0) {
-    s_data[0] = sqrt(s_data[0] / blockDim.x);
+    s_data[0] = sqrtf(sum / (DATA_PER_THREAD * BLOCK_SIZE));
   }
   __syncthreads();
 
-  g_idata[data_index] = cur / s_data[0];
+#pragma unroll
+  for(int i =0 ;i < DATA_PER_THREAD; i++){
+    r_data[i] = r_data[i] / s_data[0];
+  }
+  
+  LOADFLOAT4(g_idata[data_begin+tid*DATA_PER_THREAD]) = LOADFLOAT4(r_data[0]);
 }
 
 void initData(float *ip, int size) {
@@ -151,7 +201,7 @@ int main() {
 
   dim3 block(block_size);
   int grid_size = (n + block.x - 1) / block.x;
-  dim3 grid(grid_size);
+  dim3 grid(grid_size / DATA_PER_THREAD);
 
   // 先用CPU计算参考结果
   printf("\n=== Computing CPU Reference ===\n");
@@ -181,7 +231,7 @@ int main() {
 
   // 验证结果
   printf("\n");
-  checkRMSNormResult(hostRef, gpuRef, n, block_size);
+  checkRMSNormResult(hostRef, gpuRef, n, BLOCK_SIZE * DATA_PER_THREAD);
 
   cudaFree(d_A);
   cudaFree(d_B);

@@ -32,72 +32,70 @@ __global__ void sgemm_V1(
     float * __restrict__ a, float * __restrict__ b, float * __restrict__ c,
     const int M, const int N, const int K) {
 
-    //基本参数
-    const int BM = 128;
-    const int BK = 8;
-    const int BN = 128;
-    const int TM = 8;
-    const int TN = 8;
-
+    
     __shared__ float s_a[BM][BK];
     __shared__ float s_b[BK][BN];
-
-    float r_c[TM][TN] = {0.0};
     
-    const int tx = threadIdx.x;
-    const int ty = threadIdx.y;
+    const int TM = 8;
+    const int TN = 8;
+    const int BM = 128;
+    const int BN = 128;
+    const int Bk = 8;
 
+    //16*16的线程块里，做哪些事情
+    //刚好一个线程管4个数据，vecload
+    int tx= threadIdx.x;
+    int ty = threadIdx.y;
 
-    //先映射线程,线程映射到小块的取值位置
-    int tid = ty * blockDim.x+ tx;
-
-    
+    int tid =  ty* blockDim.x +tx;
     int load_a_smem_m = tid >> 1;
-    int load_a_smem_k = (tid & 1) <<  2;
+    int load_a_smem_k = (tid & 1) << 2;
     int load_b_smem_k = tid >> 5;
-    int load_b_smem_n = (tid & 31) <<  2;
+    int loda_b_smem_n = (tid & 31) <<2;
+
+    int step = (K+BK-1)/BK;
+
+
+    //这是提前写出来，后面再看
+    int load_a_gmem_m =  blockIdx.y * BM + load_a_smem_m;
+    int load_b_gmem_n =  blockIdx.x * BN + load_b_smem_n;
 
     
-    //多少次小矩阵
-    int step = (K+BK-1)/BK;
-    int load_a_gmem_m =  blockIdx.y * BM + load_a_smem_m;
-    int load_b_gmem_n = blockIdx.x * BN + load_b_smem_n;
-    for(int bk =0 ; bk < step; bk++){
-        //load数据
-        
-        int load_a_gmem_k = bk * BK + load_a_smem_k;
+    float r_c[TM][TN] = {0.f};
+    for(int bk = 0; bk < step ; bk++){
+        int load_a_gmem_k = bk*BK+ load_a_smem_k;
         int load_a_gmem_addr = load_a_gmem_m* K + load_a_gmem_k;
+
         FLOAT4(s_a[load_a_smem_m][load_a_smem_k]) = FLOAT4(a[load_a_gmem_addr]);
 
-        int load_b_gmem_k = bk* BK  + load_b_smem_k;
+        int load_b_gmem_k= bk* BK + load_b_smem_k;
         int load_b_gmem_addr = load_b_gmem_k * N + load_b_gmem_n;
-        FLOAT4(s_b[load_b_smem_k][load_b_smem_n]) =  FLOAT4(b[load_b_gmem_addr]);
+        FLOAT4(s_b[load_b_smem_k][load_a_smem_n]) = FLOAT4(b[load_b_gmem_addr]);
+
         
-
         __syncthreads();
-
-        //threadIdx.x * 8= 位置
-        //小矩阵计算,每个线程管8*8个结果矩阵，然后寄存器有限制，所以要在 128*8-8*128中再分块，每个线程算8*8-8*8
+        //compute 128*8 vs 8* 128 乘到8*8d的一个register里面，一个线程负责8*8 vs 8*8
         #pragma unroll
-        for(int move = 0 ; move < BK ; move++){
-            for(int m = 0 ; m < TM ;m++){
-                for(int n = 0 ; n< TN; n++) {
-                    int a_row = ty * TM + m;
-                    int b_col = tx * TN + n;
-                    r_c[m][n] += s_a[a_row][move] * s_b[move][b_col];
+        for(int move = 0; move < BK; move++){
+            for(int m =0 ;m < TM; m++){
+                for(int n= 0 ;n < TN ;n++){
+                    int a_row=  ty* TM + m;
+                    int b_col = tx*TN +n ;
+                    r_c[m][n]+= s_a[a_row][move] * s_b[move][b_col];
                 }
             }
         }
         __syncthreads();
     }
 
-    //结果回写,把结果写回global
-    for(int m =0 ; m < TM; m++){
-        int c_gmem_m = blockIdx.y* BM +  threadIdx.y* TM + m;
-        for(int n = 0; n< TN ; n+=4){
-            int c_gmem_n = blockIdx.x* BN +  threadIdx.x* TN + n;
-            int c_gmem_addr = c_gmem_m* N +  c_gmem_n;
-            FLOAT4(c[c_gmem_addr]) = FLOAT4(r_c[m][n]);
+    
+    //写回
+    for(int m= 0 ;m < TM; m++){
+        int store_gmem_m =  blockIdx.y * BM + TM * threadIdx.y + m;
+        for(int  n = 0; n < TN ; n+=4){
+            int store_gmem_n = blockIdx.x * BN + TN * threadIdx.x + n;
+            int store_gmem_addr = store_gmem_m* N + store_gmem_n;
+            FLOAT4(c[store_gmem_addr]) =  r_c[m][n];
         }
     }
    

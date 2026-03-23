@@ -32,18 +32,33 @@ __global__ void naiveSgemm(
     float * __restrict__ a, float * __restrict__ b, float * __restrict__ c,
     const int M, const int N, const int K) {
 
-    int ix = threadIdx.x + blockIdx.x* blockDim.x;
-    int iy = threadIdx.y + blockIdx.y* blockDim.y;
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
 
-    if(iy < M && ix < N){
-
-        float sum = 0.;
-        for(int k = 0 ;k < K ; k++){
-            sum +=  a[ iy * K  + k ] * b[ k * N + ix ];
+    int row = blockDim.y * blockIdx.y + ty;
+    int col = blockDim.x * blockIdx.x +tx;
+    
+    if(row <  M && col < N ){
+        float sum = 0.f;
+        for(int i = 0 ; i < K ;i++){
+            sum += a[row * K +i] * a[ N * i  + col];   
         }
-        c[ iy* N + ix ] = sum;
-    }
+        c[ row * N + col] =sum;
+    }   
 }
+
+
+// int ix = threadIdx.x + blockIdx.x* blockDim.x;
+//     int iy = threadIdx.y + blockIdx.y* blockDim.y;
+
+//     if(iy < M && ix < N){
+
+//         float sum = 0.;
+//         for(int k = 0 ;k < K ; k++){
+//             sum +=  a[ iy * K  + k ] * b[ k * N + ix ];
+//         }
+//         c[ iy* N + ix ] = sum;
+//     }
 
 
 

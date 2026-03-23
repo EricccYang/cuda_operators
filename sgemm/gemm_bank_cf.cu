@@ -37,97 +37,89 @@ __global__ void sgemm_V2(
     const int BK = 8;
     const int TM = 8;
     const int TN = 8;
-
-    const int tx = threadIdx.x;
-    const int ty = threadIdx.y;
-
-    __shared__ float s_a[BK][BM];
-    __shared__ float s_b[BK][BN];
-
-    float r_c[TM][TN] = {0.0};
-
-    const int tid = ty* blockDim.x + tx;
-
-    const int load_a_smem_m = tid/2;
-    const int load_a_smem_k = (tid & 1) << 2;
-    const int load_b_smem_k = tid >> 5;
-    const int load_b_smem_n = (tid % 32) << 2;
-
-    int step = (K+ BK-1)/BK;
-    int load_a_gmem_m = blockIdx.y * BM + load_a_smem_m;
-    int load_b_gmem_n =  blockIdx.x * BN + load_b_smem_n;
-
-    //要有寄存器的使用了
-    float r_load_a[4]= {0};
-    float r_load_b[4]= {0}; //好像可以不用
-    float r_comp_a[TM];
-    float r_comp_b[TM];
     
-    for(int i = 0 ;i < step; i++){
+    
+    float r_c[TM][TN] = {0.f};
+    __shared__ float s_a[BK][BM];
+    __shared__ float s_b[BK][BM];
 
-        int load_a_gmem_k = i*BK+ load_a_smem_k;
-        int load_a_gmem_addr = load_a_gmem_m* K + load_a_gmem_k;
+    int tid = threadIdx.y * blockDimx.x+ threadIdx.x;
+
+    int load_a_smem_m = tid << 1;
+    int load_a_smem_k = (tid & 1) << 2;
+    int load_b_smem_k = tid << 5;
+    int load_b_smem_n = (tid & 31) << 2;
+
+    float load_a_r[TM/2];
+    
+    int load_a_gmem_m = blockIdx.y * BM + load_a_smem_m;
+    int load_b_gmem_n = blockIdx.x * BN + load_b_smem_n;
+    
+    int step =  (K+BK-1)/BK;
+
+
+    float compute_a[TM];
+    float compute_b[TN];
+
+    int tx= threadIdx.x;
+    int ty =threadIdx.y;
+
+
+    for(int bk =0 ; bk < step; bk++){
+
+        int load_a_gmem_k = bk * BK + load_a_smem_k;
+        int load_b_gmem_k = bk * BK + load_b_smem_k;
         
-        //FLOAT4(s_a[load_a_smem_m][load_a_smem_k]) = FLOAT4(a[load_a_gmem_addr]);
-        //先用寄存器接一下
-        FLOAT4(r_load_a[0]) = FLOAT4(a[load_a_gmem_addr]);
+        int load_a_gmem_addr = load_a_gmem_m * K + load_a_gmem_k;
+        FLOAT4(load_a_r[0]) = FLOAT4(a[load_a_gmem_addr]);
 
-        int load_b_gmem_k = i* BK+ load_b_smem_k;
-        int load_b_gmem_addr = load_b_gmem_k * N + load_b_gmem_n;
-        FLOAT4(r_load_b[0]) = FLOAT4(b[load_b_gmem_addr]);  //先放着，可能用不着
+        s_a[load_a_smem_k][load_a_smem_m] = load_a_r[0];
+        s_a[load_a_smem_k+1][load_a_smem_m] = load_a_r[1];
+        s_a[load_a_smem_k+2][load_a_smem_m] = load_a_r[2];
+        s_a[load_a_smem_k+3][load_a_smem_m] = load_a_r[3];
+        
+        int load_b_gmem_addr = load_b_gmem_k * N +  load_b_gmem_n;
         FLOAT4(s_b[load_b_smem_k][load_b_smem_n]) = FLOAT4(b[load_b_gmem_addr]);
 
-
-        //矩阵转置
-        s_a[load_a_smem_k][load_a_smem_m]      = r_load_a[0];
-        s_a[load_a_smem_k + 1 ][load_a_smem_m] = r_load_a[1];
-        s_a[load_a_smem_k + 2 ][load_a_smem_m] = r_load_a[2];
-        s_a[load_a_smem_k + 3 ][load_a_smem_m] = r_load_a[3];
-        //FLOAT4(s_b[load_b_smem_k][load_b_smem_n]) = FLOAT4(r_load_b[0]); //先不用
-
         __syncthreads();
-    
-        #pragma unroll
-        for(int bk = 0 ; bk <  BK  ; bk++){
 
-            FLOAT4(r_comp_a[0]) = FLOAT4(s_a[bk][ty * TM/2 ]);
-            FLOAT4(r_comp_a[4]) = FLOAT4(s_a[bk][ty *  TM/2 + BM/2]);
-            FLOAT4(r_comp_b[0]) = FLOAT4(s_b[bk][tx * TN/2 ]);
-            FLOAT4(r_comp_b[4]) = FLOAT4(s_b[bk][tx * TN/2 + BN/2]); 
-            
-            #pragma unroll
-            for(int m = 0 ; m < TM ; m++){
+        for(int i =0 ;i < BK ; i++){
+            //一个线程处理8*8
+            FLOAT4(compute_a[0]) =  FLOAT4(s_a[i][ty*TM/2 ]);
+            FLOAT4(compute_b[4]) = FLOAT4(s_b[i][TM/2 * ty + BM/2]);
+
+            FLOAT4(compute_b[0]) = FLOAT4(s_b[i][TN/2* tx]);
+            FLOAT4(compute_b[4]) = FLOAT4(s_b[i][TN/2* tx + BN/2]);
+
+
+            for(int m= 0 ; m < TM ;m++){
                 for(int n = 0; n < TN ; n++){
-                    r_c[m][n] += r_comp_a[m] * r_comp_b[n];
+                    r_c[m][n] +=  compute_a[m] * compute_b[n];
                 }
             }
         }
-
-        
         __syncthreads();
     }
 
-    #pragma unroll
-    for(int i =0 ; i< TM/2; i++){
-        //上半个
-        int c_gmem_row = blockIdx.y * BM +  ty* TM/2 + i;
-        int c_gmem_col = blockIdx.x * BN + tx * TN/2;
-        int c_gmem_addr  = c_gmem_row * N  + c_gmem_col;
-        FLOAT4(c[c_gmem_addr]) = FLOAT4(r_c[i][0]);
-        FLOAT4(c[c_gmem_addr+ BN/2])= FLOAT4(r_c[i][4]);
+
+    for(int i = 0 ; i<TM/2 ;i++){
+
+        int load_m = blockIndex.y * BM + threadIdx.y * TM/2 +i;
+        int load_n = blockIndex.x * BN + threadIdx.x * TN/2;
+        int addr = load_m* N + load_n;
+        FLOAT4(c[addr]) = FLOAT4(r_c[i][0]);
+        FLOAT4(c[addr+BN/2]) = FLOAT4(r_c[i][4]);
     }
 
-    
-    //下半个
-    #pragma unroll
-    for(int i= 0 ; i < TM/2 ; i++){
-        int c_gmem_row = blockIdx.y * BM +  BM/2 +     ty* TM/2 + i;
-        int c_gmem_col = blockIdx.x * BN + tx * TN/2;
-        int c_gmem_addr  = c_gmem_row * N  + c_gmem_col;
-        FLOAT4(c[c_gmem_addr]) = FLOAT4(r_c[i + TM/2 ][0]);
-        FLOAT4(c[c_gmem_addr+ BN/2])= FLOAT4(r_c[i +TM/2 ][4]);
-    }
 
+    for(int i = 0 ; i<TM/2 ;i++){
+        int load_m = blockIndex.y * BM + threadIdx.y * TM/2 +i + BM/2;
+        int load_n = blockIndex.x * BN + threadIdx.x * TN/2;
+        int addr = load_m* N + load_n;
+        FLOAT4(c[addr]) = FLOAT4(r_c[i+TM/2][0]);
+        FLOAT4(c[addr+BN/2]) = FLOAT4(r_c[i+TM/2][4]);
+        
+    }
     
 }
 

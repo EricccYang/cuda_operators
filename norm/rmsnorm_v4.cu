@@ -6,10 +6,8 @@
 #define BLOCK_SIZE 512
 #define DATA_PER_THREAD 2
 
-//出入结果是一样的
-//传入M*K
-//传出M*K
-//一个block管一行 ？ 先这么写 这是最好写的应该， block是一维的
+
+//最后一个warp用shfl指令版 v4
 __global__  void RMSNorm(float* g_idata, unsigned int n){
 
     
