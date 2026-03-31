@@ -7,6 +7,8 @@
 #define OFFSET(row, col, ld) ((row) * (ld) + (col))
 #define FLOAT4(pointer) (reinterpret_cast<float4*>(&(pointer))[0])
 
+
+
 float testError(
     void (*gpuSgemm) (float *, float *, float *, const int, const int, const int),
     dim3 gridDim, dim3 blockDim, const int M, const int N, const int K);
@@ -39,123 +41,132 @@ __global__ void sgemm_V3(
     const int TM = 8;
     const int TN = 8;
 
-    int tid = threadIdx.y * blockDim.x + threadIdx.x;
-    
-    __shared__ float a_s[2][BK][BM];
-    __shared__ float b_s[2][BK][BN];
-
-    
-    int load_a_smem_m = tid >> 1;
-    int load_a_smem_k = (tid &1) << 2;
-    int load_b_smem_k = tid >> 5;
-    int load_b_smem_n=  (tid & 31) << 2;
-
-
-    float r_c[TM][TN] = {0.f};
+    __shared__ float s_a[2][BN][BM];
+    __shared__ float s_a[2][BN][BM];
+    float r_c[TM][TN];
     float load_r_a[4];
     
-    //先load一个放在0里
+    int tx =  threadIdx.x;
+    int ty = threadIdx.y
+    int tid = ty * blockDim.x + tx;
+
+
+    int load_a_smem_m = tid >> 1;
+    int load_a_smem_n = (tid&1) << 2;
+    int load_b_gmem_n = tid >> 5;
+    int load_b_gmem_k = (tid&31) << 2;
+    
+
+    //first load
     {
-        int load_a_gmem_m = blockIdx.y * BM + load_a_smem_m;
-        int load_a_gmem_k = load_a_smem_k;
-        int load_a_gmem_addr = load_a_gmem_m* K + load_a_gmem_k;
-        FLOAT4(load_r_a[0]) = FLOAT4(a[load_a_gmem_addr]);
+        int load_a_gmem_m = blockIdx.y * BM;
+        int load_a_gmem_n = BK*0+ load_a_smem_n;   //first
 
-        s_a[0][load_a_smem_k][load_a_smem_m] = load_r_a[0];
-        s_a[0][load_a_smem_k+1][load_a_smem_m] = load_r_a[1];
-        s_a[0][load_a_smem_k+2][load_a_smem_m] = load_r_a[2];
-        s_a[0][load_a_smem_k+3][load_a_smem_m] = load_r_a[3];
+        int load_b_gmem_n = BK*0+ load_b_smem_n;
+        int load_b_gmem_k = blockIdx.x * BN;
+        
+        int load_a_g_addr  = load_a_gmem_m* K + load_a_gmem_n;
 
-        int load_b_gmem_k =  load_b_smem_k;
-        int load_b_gmem_n =  blockIdx.x * BN + load_b_smem_n;
-        int load_b_gmem_addr = load_b_gmem_k* N  + load_b_gmem_n;
-        FLOAT4(s_b[0][load_b_gmem_k][load_b_gmem_n]) = FLOAT4(b[load_b_gmem_addr]);
+        FLOAT4(load_r_a[0]) = FLOAT4(a[load_a_g_addr]);
+        s_a[0][load_a_smem_n][load_a_smem_m] = load_r_a[0];
+        s_a[0][load_a_smem_n][load_a_smem_m+1] = load_r_a[0];
+        s_a[0][load_a_smem_n][load_a_smem_m+2] = load_r_a[0];
+        s_a[0][load_a_smem_n][load_a_smem_m+3] = load_r_a[0];
+        
+        int load_b_g_addr = load_b_gmem_n * N + load_b_gmem_k;
+        FLOAT4(s_b[0][load_b_gmem_n][load_b_gmem_k]) = FLOAT4(a[load_b_g_addr]);
     }
 
+    
     __syncthreads();
 
-    float compute_a[TM];
-    float compute_b[TM];
-    int step =   (K + BK-1)/BK;
-    for(int bk = 1; bk < step; bk++){
-        //compute 0 and load 1 
 
-        int compute_index =  (bk-1)%2;
-        int load_index = bk%2;
+    float compute_r_a[TM];
+    float conpute_r_b[TM];
+    int steps = (K+ BK +1)/BK;
+    for(int bk = 1 ; bk < steps; bk++){
 
-        int tx= threadIdx.x;
-        int ty = threadIdx.y;
-        //compute
-        #pragma unroll
-        for(int i =0; i  < BK; i++){
-            FLOAT4(compute_a[0]) =  FLOAT4(s_a[compute_index][i][tx*TN/2]);
-            FLOAT4(compute_a[4]) =  FLOAT4(s_b[compute_index][i][tx*TN/2 + BN/2])
-            FLOAT4(compute_b[0]) =  FLOAT4(s_a[compute_index][i][tx*TN/2]);
-            FLOAT4(compute_b[4]) =  FLOAT4(s_b[compute_index][i][tx*TN/2 + BN/2]);
+        int compute_index = (bk&1)-1;
+        int load_index = bk&1;
+        
 
-            for(int m = 0;m < TM; m++){
-                for(int n = 0; n < TN ;n++){
-                    r_c[m][n] += compute_a[m]* compute_b[n];
+        for(int i = 0; i< BK ; i++){
+
+            int a_m = threadIdx.y *TM/2;
+            int b_k = threadIdx.x * TN/2;
+
+            FLOAT4(compute_r_a[0]) = FLOAT4(s_a[compute_index][i][a_m]);
+            FLOAT4(conpute_r_a[4]) = FLOAT4(s_a[compute_index][i][a_m+BM/2]);
+            FLOAT4(compute_r_b[0]) = FLOAT4(s_b[compute_index][i][b_k]);
+            FLOAT4(compute_r_b[4]) = FLOAT4(s_b[compute_index][i][b_k+BN/2]);
+
+            #pragma unroll
+            for(int  m= 0 ; m < TM; m++){
+                for(int  n= 0 ; n <TN ;n++){
+                    r_c[m][n] += comput_r_a[m] * comput_r_b[n];
                 }
             }
         }
 
-        //load
-        int load_a_gmem_m = blockIdx.y * BM + load_a_smem_m;
-        int load_a_gmem_k = load_a_smem_k + BK * bk;
-        int load_a_gmem_addr = load_a_gmem_m* K + load_a_gmem_k;
-        FLOAT4(load_r_a[0]) = FLOAT4(a[load_a_gmem_addr]);
-
-        s_a[load_index][load_a_smem_k][load_a_smem_m] = load_r_a[0];
-        s_a[load_index][load_a_smem_k+1][load_a_smem_m] = load_r_a[1];
-        s_a[load_index][load_a_smem_k+2][load_a_smem_m] = load_r_a[2];
-        s_a[load_index][load_a_smem_k+3][load_a_smem_m] = load_r_a[3];
-
-        int load_b_gmem_k =  load_b_smem_k + BK* bk;
-        int load_b_gmem_n =  blockIdx.x * BN + load_b_smem_n;
-        int load_b_gmem_addr = load_b_gmem_k* N  + load_b_gmem_n;
-        FLOAT4(s_b[load_index][load_b_gmem_k][load_b_gmem_n]) = FLOAT4(b[load_b_gmem_addr]);
         
+        {
+            int load_a_gmem_m = blockIdx.y * BM;
+            int load_a_gmem_n = BK*bk+ load_a_smem_n;   //first
+    
+            int load_b_gmem_n = BK*bk+ load_b_smem_n;
+            int load_b_gmem_k = blockIdx.x * BN;
+            
+            int load_a_g_addr  = load_a_gmem_m* K + load_a_gmem_n;
+    
+            FLOAT4(load_r_a[0]) = FLOAT4(a[load_a_g_addr]);
+            s_a[load_index][load_a_smem_n][load_a_smem_m] = load_r_a[0];
+            s_a[load_index][load_a_smem_n][load_a_smem_m+1] = load_r_a[0];
+            s_a[load_index][load_a_smem_n][load_a_smem_m+2] = load_r_a[0];
+            s_a[load_index][load_a_smem_n][load_a_smem_m+3] = load_r_a[0];
+            
+            int load_b_g_addr = load_b_gmem_n * N + load_b_gmem_k;
+            FLOAT4(s_b[load_index][load_b_gmem_n][load_b_gmem_k]) = FLOAT4(a[load_b_g_addr]);
+        }
+
         __syncthreads();
 
-    }
+    } 
 
+    //last
+    for(int i = 0; i< TM ; i++){
 
-    {
-        int tx= threadIdx.x;
-        int ty = threadIdx.y;
-        //compute
+        int a_m = threadIdx.y *TM/2;
+        int b_k = threadIdx.x * TN/2;
+
+        FLOAT4(compute_r_a[0]) = FLOAT4(s_a[1][i][a_m]);
+        FLOAT4(conpute_r_a[4]) = FLOAT4(s_a[1][i][a_m+BM/2]);
+        FLOAT4(compute_r_b[0]) = FLOAT4(s_b[1][i][b_k]);
+        FLOAT4(compute_r_b[4]) = FLOAT4(s_b[1][i][b_k+BN/2]);
+
         #pragma unroll
-        for(int i =0; i  < BK; i++){
-            FLOAT4(compute_a[0]) =  FLOAT4(s_a[1][i][tx*TN/2]);
-            FLOAT4(compute_a[4]) =  FLOAT4(s_b[1][i][tx*TN/2 + BN/2])
-            FLOAT4(compute_b[0]) =  FLOAT4(s_a[1][i][tx*TN/2]);
-            FLOAT4(compute_b[4]) =  FLOAT4(s_b[1][i][tx*TN/2 + BN/2]);
-
-            for(int m = 0;m < TM; m++){
-                for(int n = 0; n < TN ;n++){
-                    r_c[m][n] += compute_a[m]* compute_b[n];
-                }
+        for(int  m= 0 ; m < TM; m++){
+            for(int  n= 0 ; n <TN ;n++){
+                r_c[m][n] += comput_r_a[m] * comput_r_b[n];
             }
         }
     }
 
-    //store TM/2 rows
     #pragma unroll
-    for(int i =0;i < TM/2;i++){
-        int store_gmem_m = blockIdx.y * BM + threadIdx.y * TM + i;
-        int store_gmem_n = blockIdx.x * BN + threadIdx.x * TN/2;
-        int addr = store_gmem_m*  N + store_gmem_n;
-        FLOAT4(c[addr]) = FLOAT4(r_c[i][0]);
-        FLOAT4(c[addr + BN/2]) = FLOAT4(r_c[i][4]);
+    for(int i =0 ; i < TM;i++){
+        int store_gmem_m = blockIdx.y* BM + threadIdx.y * TM +i;
+        int store_gmem_n = blockIdx.x* BN + threadIdx.x * TN ;
+        int store_gmem_addr= store_gmem_m * N + store_gmem_n;
+        FLOAT4(c[store_gmem_addr]) = r_c[i][0];
+        FLOAT4(c[store_gmem_addr + BN/2]) = r_c[i][4];
     }
+
     #pragma unroll
-    for(int i =0;i < TM/2;i++){
-        int store_gmem_m = blockIdx.y * BM + threadIdx.y * TM + i + BM/2;
-        int store_gmem_n = blockIdx.x * BN + threadIdx.x * TN/2;
-        int addr = store_gmem_m*  N + store_gmem_n;
-        FLOAT4(c[addr]) = FLOAT4(r_c[i][0]);
-        FLOAT4(c[addr + BN/2]) = FLOAT4(r_c[i][4]);
+    for(int i =0; i < TM/2;i++){
+        int store_gmem_m = blockIdx.y* BM + threadIdx.y * TM +i + BM/2;
+        int store_gmem_n = blockIdx.x* BN + threadIdx.x * TN ;
+        int store_gmem_addr= store_gmem_m * N + store_gmem_n;
+        FLOAT4(c[store_gmem_addr]) = r_c[i+TM/2][0];
+        FLOAT4(c[store_gmem_addr + BN/2]) = r_c[i+TM/2][4];
     }
 
 }
