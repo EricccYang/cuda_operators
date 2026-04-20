@@ -1,8 +1,27 @@
-// nvcc -arch=sm_90 gemm_double_buffer.cu -o gemm_double_buffer
+// nvcc -arch=sm_90 gemm_multistage_padded.cu -o gemm_multistage_padded
 //
 // ============================================================
-//  Double-buffer SGEMM (清理过笔误的基线版)
-//  2 stage, gmem->smem 用同步 FLOAT4, 用于和 multistage/WS 对比
+//  Multistage SGEMM + smem padding (照 CUTLASS SIMT 的 thinking)
+//
+//  相比 gemm_multistage.cu 只多一处改动:
+//    s_a[STAGES][BK][BM]  →  s_a[STAGES][BK][BM + PAD_M]
+//
+//  目的: 避 smem 写入的 bank conflict.
+//
+//  为什么原 multistage 有 conflict:
+//    - 每个线程对 A 做 4 条 4B cp.async, 写到 s_a[k..k+3][m]
+//    - warp 内偶数 tid 的 i=0 写 s_a[0][0..15], 奇数 tid 写 s_a[4][0..15]
+//    - 无 padding 时 4*BM = 512 = 16 * 32, 行间偏移是 bank 对齐整数倍
+//      → 两组写落到同一批 bank 上, 2-way 冲突
+//
+//  为什么 PAD_M = 4 正好:
+//    - 新 stride = 128 + 4 = 132
+//    - 4 * 132 = 528 = 16 * 32 + 16
+//    - 行 0 与行 4 的 bank 偏差正好 16 (半圈), 两组填满 32 个 bank, 零冲突
+//
+//  CUTLASS simt_transpose_padding(256, 8, 32) = 32, 是针对他们自己 thread
+//  map 的最佳值; 对咱们这种 (m=tid/2, k=(tid&1)*4) 的 mapping, 4 就够了,
+//  也更省 smem.
 // ============================================================
 
 #include <cstdint>
@@ -10,6 +29,7 @@
 #include <stdlib.h>
 #include <float.h>
 #include <cuda_runtime.h>
+#include <cuda_pipeline.h>
 
 #define OFFSET(row, col, ld) ((row) * (ld) + (col))
 #define FLOAT4(pointer) (reinterpret_cast<float4*>(&(pointer))[0])
@@ -31,7 +51,7 @@ void cpuSgemm(float *a, float *b, float *c, const int M, const int N, const int 
 }
 
 
-__global__ void sgemm_double_buffer(
+__global__ void sgemm_multistage_padded(
     float * __restrict__ a, float * __restrict__ b, float * __restrict__ c,
     const int M, const int N, const int K) {
 
@@ -40,13 +60,16 @@ __global__ void sgemm_double_buffer(
     const int BK = 8;
     const int TM = 8;
     const int TN = 8;
+    const int STAGES = 3;
+    const int PAD_M = 4;                       // <-- 关键: s_a 的 M 维加 4 个 float padding
+    const int BM_PAD = BM + PAD_M;             // 132
 
     int tx = threadIdx.x;
     int ty = threadIdx.y;
     int tid = ty * blockDim.x + tx;
 
-    __shared__ float s_a[2][BK][BM];    // A 是 transposed 存法
-    __shared__ float s_b[2][BK][BN];
+    __shared__ float s_a[STAGES][BK][BM_PAD];  // <-- 唯一差别: 最内维带 padding
+    __shared__ float s_b[STAGES][BK][BN];      //     s_b 不改 (float4 写基本 conflict-free)
 
     int load_smem_a_m = tid >> 1;
     int load_smem_a_k = (tid & 1) << 2;
@@ -58,39 +81,56 @@ __global__ void sgemm_double_buffer(
 
     int step = (K + BK - 1) / BK;
 
-    // ---- prologue: 同步 load stage 0 ----
-    {
-        float load_a[4];
-        int gk_a = 0 * BK + load_smem_a_k;
-        int gk_b = 0 * BK + load_smem_b_k;
-        FLOAT4(load_a[0]) = FLOAT4(a[load_gmem_a_m * K + gk_a]);
-        s_a[0][load_smem_a_k + 0][load_smem_a_m] = load_a[0];
-        s_a[0][load_smem_a_k + 1][load_smem_a_m] = load_a[1];
-        s_a[0][load_smem_a_k + 2][load_smem_a_m] = load_a[2];
-        s_a[0][load_smem_a_k + 3][load_smem_a_m] = load_a[3];
-        FLOAT4(s_b[0][load_smem_b_k][load_smem_b_n]) =
-            FLOAT4(b[gk_b * N + load_gmem_b_n]);
+    // prologue
+    #pragma unroll
+    for (int s = 0; s < STAGES - 1; s++) {
+        if (s < step) {
+            int gk_a = s * BK + load_smem_a_k;
+            int gk_b = s * BK + load_smem_b_k;
+            #pragma unroll
+            for (int i = 0; i < 4; i++) {
+                __pipeline_memcpy_async(
+                    &s_a[s][load_smem_a_k + i][load_smem_a_m],
+                    &a[load_gmem_a_m * K + gk_a + i],
+                    sizeof(float));
+            }
+            __pipeline_memcpy_async(
+                &s_b[s][load_smem_b_k][load_smem_b_n],
+                &b[gk_b * N + load_gmem_b_n],
+                sizeof(float4));
+        }
+        __pipeline_commit();
     }
-    __syncthreads();
 
     float r_c[TM][TN] = {0};
     float compute_a[TM];
     float compute_b[TN];
 
-    // ---- main loop: compute on (bk-1)%2, load into bk%2 ----
-    for (int bk = 1; bk < step; bk++) {
-        int compute_stage = (bk - 1) & 1;
-        int load_stage    = bk & 1;
+    // main loop
+    for (int bk = 0; bk < step; bk++) {
+        int issue_bk    = bk + STAGES - 1;
+        int issue_stage = issue_bk % STAGES;
+        if (issue_bk < step) {
+            int gk_a = issue_bk * BK + load_smem_a_k;
+            int gk_b = issue_bk * BK + load_smem_b_k;
+            #pragma unroll
+            for (int i = 0; i < 4; i++) {
+                __pipeline_memcpy_async(
+                    &s_a[issue_stage][load_smem_a_k + i][load_smem_a_m],
+                    &a[load_gmem_a_m * K + gk_a + i],
+                    sizeof(float));
+            }
+            __pipeline_memcpy_async(
+                &s_b[issue_stage][load_smem_b_k][load_smem_b_n],
+                &b[gk_b * N + load_gmem_b_n],
+                sizeof(float4));
+        }
+        __pipeline_commit();
 
-        // load next tile (gmem -> reg -> smem, A 转置)
-        float load_a[4];
-        int gk_a = bk * BK + load_smem_a_k;
-        int gk_b = bk * BK + load_smem_b_k;
-        FLOAT4(load_a[0]) = FLOAT4(a[load_gmem_a_m * K + gk_a]);
-        // B 用 async 的 pending store 思路在纯同步版本里不存在, 直接一发 float4
-        float4 load_b = FLOAT4(b[gk_b * N + load_gmem_b_n]);
+        __pipeline_wait_prior(STAGES - 2);
+        __syncthreads();
 
-        // compute on current stage
+        int compute_stage = bk % STAGES;
         #pragma unroll
         for (int i = 0; i < BK; i++) {
             FLOAT4(compute_a[0]) = FLOAT4(s_a[compute_stage][i][ty * TM / 2]);
@@ -106,38 +146,10 @@ __global__ void sgemm_double_buffer(
                 }
             }
         }
-
-        // commit loaded tile to smem (转置写 A)
-        s_a[load_stage][load_smem_a_k + 0][load_smem_a_m] = load_a[0];
-        s_a[load_stage][load_smem_a_k + 1][load_smem_a_m] = load_a[1];
-        s_a[load_stage][load_smem_a_k + 2][load_smem_a_m] = load_a[2];
-        s_a[load_stage][load_smem_a_k + 3][load_smem_a_m] = load_a[3];
-        FLOAT4(s_b[load_stage][load_smem_b_k][load_smem_b_n]) = load_b;
-
         __syncthreads();
     }
 
-    // ---- epilogue: 最后一块 ----
-    {
-        int compute_stage = (step - 1) & 1;
-        #pragma unroll
-        for (int i = 0; i < BK; i++) {
-            FLOAT4(compute_a[0]) = FLOAT4(s_a[compute_stage][i][ty * TM / 2]);
-            FLOAT4(compute_a[4]) = FLOAT4(s_a[compute_stage][i][ty * TM / 2 + BM / 2]);
-            FLOAT4(compute_b[0]) = FLOAT4(s_b[compute_stage][i][tx * TN / 2]);
-            FLOAT4(compute_b[4]) = FLOAT4(s_b[compute_stage][i][tx * TN / 2 + BN / 2]);
-
-            #pragma unroll
-            for (int m = 0; m < TM; m++) {
-                #pragma unroll
-                for (int n = 0; n < TN; n++) {
-                    r_c[m][n] += compute_a[m] * compute_b[n];
-                }
-            }
-        }
-    }
-
-    // ---- store C: 4 个 quadrant, 每 quadrant 4 行 × 2 float4 ----
+    // store
     #pragma unroll
     for (int i = 0; i < TM / 2; i++) {
         int g_m = blockIdx.y * BM + ty * TM / 2 + i;
@@ -156,10 +168,10 @@ __global__ void sgemm_double_buffer(
 
 
 int main(void) {
-    printf("\nKernel = sgemm_double_buffer\n");
+    printf("\nKernel = sgemm_multistage_padded\n");
     const int outer_repeat = 10, inner_repeat = 1;
     const int BM = 128, BN = 128, TM = 8, TN = 8;
-    void (*gpuSgemm)(float *, float *, float *, const int, const int, const int) = sgemm_double_buffer;
+    void (*gpuSgemm)(float *, float *, float *, const int, const int, const int) = sgemm_multistage_padded;
 
     {
         const int M = 512, N = 512, K = 512;
@@ -177,7 +189,6 @@ int main(void) {
         const int M = M_list[i], N = N_list[i], K = K_list[i];
         dim3 blockDim(BN / TN, BM / TM);
         dim3 gridDim((N + BN - 1) / BN, (M + BM - 1) / BM);
-
         double max_sec = 0.0, min_sec = DBL_MAX, total_sec = 0.0;
         for (int j = 0; j < outer_repeat; j++) {
             double this_sec = testPerformance(gpuSgemm, gridDim, blockDim, M, N, K, inner_repeat);
@@ -197,68 +208,41 @@ int main(void) {
 float testError(
     void (*gpuSgemm)(float *, float *, float *, const int, const int, const int),
     dim3 gridDim, dim3 blockDim, const int M, const int N, const int K) {
-
     size_t size_a = M * K * sizeof(float);
     size_t size_b = K * N * sizeof(float);
     size_t size_c = M * N * sizeof(float);
-
-    float *h_a = (float *)malloc(size_a);
-    float *h_b = (float *)malloc(size_b);
-    float *h_c = (float *)malloc(size_c);
-    float *h_d_c = (float *)malloc(size_c);
-    float *d_a, *d_b, *d_c;
-    cudaMalloc(&d_a, size_a);
-    cudaMalloc(&d_b, size_b);
-    cudaMalloc(&d_c, size_c);
-
+    float *h_a=(float*)malloc(size_a),*h_b=(float*)malloc(size_b),*h_c=(float*)malloc(size_c),*h_d_c=(float*)malloc(size_c);
+    float *d_a,*d_b,*d_c;
+    cudaMalloc(&d_a,size_a); cudaMalloc(&d_b,size_b); cudaMalloc(&d_c,size_c);
     srand(time(0));
-    for (int i = 0; i < M * K; i++) h_a[i] = rand() / float(RAND_MAX);
-    for (int i = 0; i < K * N; i++) h_b[i] = rand() / float(RAND_MAX);
-    cudaMemset(d_c, 0, size_c);
-
-    cpuSgemm(h_a, h_b, h_c, M, N, K);
-    cudaMemcpy(d_a, h_a, size_a, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_b, h_b, size_b, cudaMemcpyHostToDevice);
-    gpuSgemm<<<gridDim, blockDim>>>(d_a, d_b, d_c, M, N, K);
-    cudaMemcpy(h_d_c, d_c, size_c, cudaMemcpyDeviceToHost);
-
-    float max_error = 0.0f;
-    for (int i = 0; i < M * N; i++) {
-        float e = fabsf(h_d_c[i] - h_c[i]);
-        if (e != e || max_error != max_error) max_error = -NAN;
-        else max_error = max(max_error, e);
-    }
-
-    free(h_a); free(h_b); free(h_c); free(h_d_c);
-    cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
+    for(int i=0;i<M*K;i++) h_a[i]=rand()/float(RAND_MAX);
+    for(int i=0;i<K*N;i++) h_b[i]=rand()/float(RAND_MAX);
+    cudaMemset(d_c,0,size_c);
+    cpuSgemm(h_a,h_b,h_c,M,N,K);
+    cudaMemcpy(d_a,h_a,size_a,cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b,h_b,size_b,cudaMemcpyHostToDevice);
+    gpuSgemm<<<gridDim,blockDim>>>(d_a,d_b,d_c,M,N,K);
+    cudaMemcpy(h_d_c,d_c,size_c,cudaMemcpyDeviceToHost);
+    float max_error=0.0f;
+    for(int i=0;i<M*N;i++){float e=fabsf(h_d_c[i]-h_c[i]); if(e!=e||max_error!=max_error) max_error=-NAN; else max_error=max(max_error,e);}
+    free(h_a);free(h_b);free(h_c);free(h_d_c);
+    cudaFree(d_a);cudaFree(d_b);cudaFree(d_c);
     return max_error;
 }
-
 
 float testPerformance(
     void (*gpuSgemm)(float *, float *, float *, const int, const int, const int),
     dim3 gridDim, dim3 blockDim, const int M, const int N, const int K, const int repeat) {
-
     size_t size_a = M * K * sizeof(float);
     size_t size_b = K * N * sizeof(float);
     size_t size_c = M * N * sizeof(float);
-
-    float *d_a, *d_b, *d_c;
-    cudaMalloc(&d_a, size_a);
-    cudaMalloc(&d_b, size_b);
-    cudaMalloc(&d_c, size_c);
-
-    cudaEvent_t start, end;
-    cudaEventCreate(&start);
-    cudaEventCreate(&end);
-    cudaEventRecord(start);
-    for (int i = 0; i < repeat; i++)
-        gpuSgemm<<<gridDim, blockDim>>>(d_a, d_b, d_c, M, N, K);
-    cudaEventRecord(end);
-    cudaEventSynchronize(end);
-
-    float msec;
-    cudaEventElapsedTime(&msec, start, end);
-    cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
-    return msec / 1000.0 / repeat;
+    float *d_a,*d_b,*d_c;
+    cudaMalloc(&d_a,size_a); cudaMalloc(&d_b,size_b); cudaMalloc(&d_c,size_c);
+    cudaEvent_t s,e; cudaEventCreate(&s); cudaEventCreate(&e);
+    cudaEventRecord(s);
+    for(int i=0;i<repeat;i++) gpuSgemm<<<gridDim,blockDim>>>(d_a,d_b,d_c,M,N,K);
+    cudaEventRecord(e); cudaEventSynchronize(e);
+    float ms; cudaEventElapsedTime(&ms,s,e);
+    cudaFree(d_a);cudaFree(d_b);cudaFree(d_c);
+    return ms/1000.0/repeat;
 }
