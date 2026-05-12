@@ -5,6 +5,13 @@
 #define BLOCK_SIZE 512
 //把后一个block的数据先挪到前一个block，一个线程block管两个数据block的意思
 
+
+
+
+
+
+
+
 __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
 
     int tid =  threadIdx.x;

@@ -29,8 +29,6 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
     if(tid == 0){
         g_odata[blockIdx.x] = idata[0];
     }
-
-
     
 }
 

@@ -3,6 +3,7 @@
 
 
 
+
 //把后一个block的数据先挪到前一个block，一个线程block管两个数据block的意思
 
 __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
@@ -10,7 +11,6 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
     int tid =  threadIdx.x;
     int idx = blockDim.x * (blockIdx.x* 8)+ tid;
     int* idata= g_idata+ blockDim.x * (blockIdx.x* 8);
-
         
     //挪数据
     #pragma unroll
@@ -42,7 +42,7 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
         g_odata[blockIdx.x]= idata[0];
     }
 
-}
+} 
 
 
 void initData(int *ip, int size){

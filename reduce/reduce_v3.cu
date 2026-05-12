@@ -7,26 +7,54 @@
 
 __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
 
-    int tid = threadIdx.x;
-    int* idata=  g_idata+ blockIdx.x * blockDim.x;
+    int tx = threadIdx.x;
+    int index = blockDim.x * blockIdx.x + tx;
 
-    if( blockIdx.x * blockDim.x + tid >= n){
+
+    if(index >=n ){
         return;
     }
 
-    for(int stride = blockDim.x/2;  stride > 0 ; stride/=2 ){
-        if(tid <  stride){
-            idata[tid]+= idata[tid+stride];
+
+    // extern __shared__ int sm[];
+
+    #pragma unroll
+    for(int stride = blockDim.x/2;  stride > 0 ; stride/=2){
+        if(index < stride){
+            g_idata[index] +=  g_idata[index+stride];
         }
-        
         __syncthreads();
     }
 
-    if(tid == 0){
-        g_odata[blockIdx.x]=  idata[0];
+    if( tx == 0){
+        g_odata[0] = g_idata[0];
     }
 
 }
+
+
+
+
+
+
+// int tid = threadIdx.x;
+// int* idata=  g_idata+ blockIdx.x * blockDim.x;
+
+// if( blockIdx.x * blockDim.x + tid >= n){
+//     return;
+// }
+
+// for(int stride = blockDim.x/2;  stride > 0 ; stride/=2 ){
+//     if(tid <  stride){
+//         idata[tid]+= idata[tid+stride];
+//     }
+    
+//     __syncthreads();
+// }
+
+// if(tid == 0){
+//     g_odata[blockIdx.x]=  idata[0];
+// }
 
 
 void initData(int *ip, int size){

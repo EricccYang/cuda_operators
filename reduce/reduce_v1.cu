@@ -28,7 +28,6 @@ __global__  void reduce(int* g_idata, int* g_odata, unsigned int n){
     }
 
 
-
 }
 
 
