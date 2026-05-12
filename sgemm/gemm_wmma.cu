@@ -441,6 +441,51 @@ simple_wmma_gemm(half *a, half *b, float *c, float *d, int m_ld, int n_ld, int k
     }
 }
 
+
+__global__ void my_gemm(half* a, half* b, float* c, int M ,int N , int K){
+
+    int line = threadIdx.x%32;
+    int tid = blockDim.x * threadIdx.y + threadIdx.x;
+    int warp_id = tid / 32;
+
+
+    wmma::fragment<wmma::matrix_a, 16, 16, 8,half, wmma::row_major> a_frag;
+    wmma::fragment<wmma::matrix_b, 16, 16, 8,half, wmma::col_major> b_frag;
+    wmma::fragment<wmma::accumulator, 16,16,8,float> acc_frag;
+
+    wmma::fill_fragment(acc_frag, 0.0f);
+
+
+        // Tile using a 2D grid
+        int warpM = (blockIdx.x * blockDim.x + threadIdx.x) / warpSize;
+        int warpN = (blockIdx.y * blockDim.y + threadIdx.y);
+
+
+    for(int i  =0 ; i< K; i+= 8){
+
+        int aCol =  i;
+        int aRow =  warpM * 16;
+        int bCol =  warpN * 16;
+        int bRow =  i;
+
+        if(aRow < M && aCol < K && bRow < K && bCol < N){
+
+            wmma::load_matrix_async(a_frag, a+ aRow*K + aCol , K);
+            wmma::load_matrix_async(b_frag, b+ bCol*K + bRow, K);
+
+            wmma:mma_async(a_frag, b_frag, acc_frag);
+        }
+    }
+
+    int cRow = warpM * 16;
+    int cCol = warpN * 16;
+    if(cRow < M && cCol < N){
+        wmma::store_matrix_sync(c + cRow * N + cCol, acc_frag, N, wmma::mem_row_major);
+    }
+    
+
+}
+
 __host__ void matMultiplyOnHost(half  *A,
                                 half  *B,
                                 float *C,
