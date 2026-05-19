@@ -33,14 +33,14 @@ __global__ void sgemm_V1(
     const int M, const int N, const int K) {
 
     
-    __shared__ float s_a[BM][BK];
-    __shared__ float s_b[BK][BN];
-    
     const int TM = 8;
     const int TN = 8;
     const int BM = 128;
     const int BN = 128;
-    const int Bk = 8;
+    const int BK = 8;
+
+    __shared__ float s_a[BM][BK];
+    __shared__ float s_b[BK][BN];
 
     //16*16的线程块里，做哪些事情
     //刚好一个线程管4个数据，vecload
@@ -51,7 +51,7 @@ __global__ void sgemm_V1(
     int load_a_smem_m = tid >> 1;
     int load_a_smem_k = (tid & 1) << 2;
     int load_b_smem_k = tid >> 5;
-    int loda_b_smem_n = (tid & 31) <<2;
+    int load_b_smem_n = (tid & 31) <<2;
 
     int step = (K+BK-1)/BK;
 
@@ -70,7 +70,7 @@ __global__ void sgemm_V1(
 
         int load_b_gmem_k= bk* BK + load_b_smem_k;
         int load_b_gmem_addr = load_b_gmem_k * N + load_b_gmem_n;
-        FLOAT4(s_b[load_b_smem_k][load_a_smem_n]) = FLOAT4(b[load_b_gmem_addr]);
+        FLOAT4(s_b[load_b_smem_k][load_b_smem_n]) = FLOAT4(b[load_b_gmem_addr]);
 
         
         __syncthreads();
@@ -95,7 +95,7 @@ __global__ void sgemm_V1(
         for(int  n = 0; n < TN ; n+=4){
             int store_gmem_n = blockIdx.x * BN + TN * threadIdx.x + n;
             int store_gmem_addr = store_gmem_m* N + store_gmem_n;
-            FLOAT4(c[store_gmem_addr]) =  r_c[m][n];
+            FLOAT4(c[store_gmem_addr]) = FLOAT4(r_c[m][n]);
         }
     }
    
