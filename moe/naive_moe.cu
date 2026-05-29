@@ -86,11 +86,9 @@ int main(void){
     dim3 block_size(128); 
     dim3 grid_size(1, (N+block_size.x-1)/block_size.x);
 
-    
-
     float* a;
     int* out;
-    select_topk(a, N/128 ,128, out, 8);
+    select_topk<<<grid_size,block_size>>>(a, N/128 ,128, out, 8);
 
     return 0;
 
