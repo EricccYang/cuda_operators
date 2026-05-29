@@ -20,7 +20,7 @@ __forceinline__  __device__ float warp_reduce_max(float val){
 
 
 
-__device__ void select_topk(float* logits, int num_tokens, int num_experts, int* out ,int topk){
+__global__ void select_topk(float* logits, int num_tokens, int num_experts, int* out ,int topk){
     
     
     int tid = threadIdx.x;
@@ -81,6 +81,10 @@ __device__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 
 
 int main(void){
+
+    printf("Starting...\n");
+    int dev =0;
+    cudaSetDevice(dev);
 
 
     dim3 block_size(128); 
