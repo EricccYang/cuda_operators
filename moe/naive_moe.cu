@@ -13,7 +13,7 @@ __forceinline__  float warp_reduce_max(float val){
 
     #pragma unroll
     for(int offset = 16; offset > 0 ; offset >>= 1){
-        val = fmax(val,  shfl_down_sync(0xffffffff, offset, val));
+        val = fmax(val,  __shfl_down_sync(0xffffffff, offset, val));
     }
     return val;
 };
@@ -80,7 +80,7 @@ __device__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 #define N 1024
 
 
-void main(void){
+int main(void){
 
 
     
@@ -95,6 +95,7 @@ void main(void){
     select_topk(a, N/128 ,128, b);
 
 
+    return 0;
 
 
 }
