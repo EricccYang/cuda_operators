@@ -89,8 +89,8 @@ int main(void){
     
 
     float* a;
-    float* b;
-    select_topk(a, N/128 ,128, b);
+    int* out;
+    select_topk(a, N/128 ,128, out, 8);
 
     return 0;
 
