@@ -13,7 +13,7 @@ __forceinline__  __device__ float warp_reduce_max(float val){
 
     #pragma unroll
     for(int offset = 16; offset > 0 ; offset >>= 1){
-        val = fmax(val,  __shfl_down_sync(0xffffffff, offset, val));
+        val = fmaxf(val,  __shfl_down_sync(0xffffffff, val, offset));
     }
     return val;
 };
