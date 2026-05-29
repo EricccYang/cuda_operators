@@ -78,7 +78,7 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 
 
 #define N 1024
-
+#define TOPK 8
 
 int main(void){
 
@@ -87,12 +87,24 @@ int main(void){
     cudaSetDevice(dev);
 
 
+
     dim3 block_size(128); 
     dim3 grid_size(1, (N+block_size.x-1)/block_size.x);
 
-    float* a;
+    int nBytes = N*sizeof(float);
+
+    float* a ;
+    cudaMalloc((float**)&a, nBytes);
+    float* host_a = (float*)malloc(nBytes);
+    memset(host_a, 0, nBytes);
+    cudaMemcpy(a, host_a,nBytes, cudaMemcpyHostToDevice);
+
+    
     int* out;
-    select_topk<<<grid_size,block_size>>>(a, N/128 ,128, out, 8);
+    cudaMalloc((int**)&out, (N/128)* TOPK);
+
+
+    select_topk<<<grid_size,block_size>>>(a, N/128 ,128, out, TOPK);
 
     return 0;
 
