@@ -9,7 +9,7 @@
 
 
 
-__forceinline__  float warp_reduce_max(float val){
+__forceinline__  __device__ float warp_reduce_max(float val){
 
     #pragma unroll
     for(int offset = 16; offset > 0 ; offset >>= 1){
