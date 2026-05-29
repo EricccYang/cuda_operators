@@ -27,7 +27,7 @@ __device__ void select_topk(float* logits, int num_tokens, int num_experts, int*
     int wid = tid >> 5;
     int lid = tid & 31;
 
-    const int warp_size = 32;
+    constexpr int warp_size = 32;
 
     float* block_start = blockIdx.y *  NUM_EXPERTS +  logits;
     float* warp_start  = block_start + wid * warp_size;
@@ -46,10 +46,10 @@ __device__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 
     int k = 0;
     while(k < topk){
-        __shared__ extern float sm[blockDim.x/warp_size];
+        __shared__  float sm[NUM_EXPERTS/warp_size];
         float warp_max = warp_reduce_max(cur_value);
         if(lid == 0){
-            sm[lid] = warp_sum;
+            sm[wid] = warp_max;
         }
 
         __syncthreads();
@@ -83,8 +83,6 @@ __device__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 int main(void){
 
 
-    
-    
     dim3 block_size(128); 
     dim3 grid_size(1, (N+block_size.x-1)/block_size.x);
 
@@ -93,7 +91,6 @@ int main(void){
     float* a;
     float* b;
     select_topk(a, N/128 ,128, b);
-
 
     return 0;
 
