@@ -29,7 +29,7 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 
     constexpr int warp_size = 32;
 
-    float* block_start = blockIdx.y *  NUM_EXPERTS +  logits;
+    float* block_start = logits + blockIdx.y *  NUM_EXPERTS ;
     float* warp_start  = block_start + wid * warp_size;
 
     
@@ -101,7 +101,7 @@ int main(void){
 
     
     int* out;
-    cudaMalloc((int**)&out, (N/128)* TOPK);
+    cudaMalloc((int**)&out, (N/128)* TOPK* sizeof(int));
 
 
     select_topk<<<grid_size,block_size>>>(a, N/128 ,128, out, TOPK);
