@@ -1,13 +1,17 @@
+#include <algorithm>
 #include <cmath>
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cfloat>
+#include <iterator>
+#include <utility>
 
 
 
 #define NUM_EXPERTS 128
+#define FLOAT4(pointer) (reinterpret_cast<float4*>(&(pointer))[0])
 
 
 __forceinline__  __device__ float warp_reduce_max(float val){
@@ -19,10 +23,152 @@ __forceinline__  __device__ float warp_reduce_max(float val){
 };
 
 
+
+namespace my_util{
+
+    template <typename T>
+    __forceinline__ __device__ void swap(T* a, T* b){
+        T temp = *a;
+        *a = *b;
+        *b = temp;
+    }
+    
+}
+
+
+//sort,  max value first
+template <int num>
+__forceinline__ __device__ void sort_elements(float* value){
+    static_assert(num == 1 || num == 2 || num == 4, "num must be 1, 2 or 4");
+    return;
+}
+
+
+template <>
+__forceinline__ __device__ void sort_elements<1>(float* value){
+    return;
+}
+
+
+template <>
+__forceinline__ __device__ void sort_elements<2>(float* value){
+    float a = value[0];
+    float b = value[1];
+    if(a < b){
+        my_util::swap(&value[0],&value[1]);
+    }
+    return;
+}
+
+template <>
+__forceinline__ __device__ void sort_elements<4>(float* value){
+
+    sort_elements<2>(value);
+    sort_elements<2>(value + 2);
+    if(value[0] < value[2]){
+        my_util::swap(&value[0], &value[2]);
+    }
+    if(value[1] < value[3]){
+        my_util::swap(&value[1], &value[3]);
+    }
+    if(value[1] < value[2]){
+        my_util::swap(&value[1], &value[2]);
+    }
+}
+
+
+
+template <int num>
+__forceinline__ __device__ void sort_elements_and_index(float* value, int* index){
+    static_assert(num == 1 || num == 2 || num == 4, "num must be 1, 2 or 4");
+    return;
+}
+
+
+template <>
+__forceinline__ __device__ void sort_elements_and_index<1>(float* value, int* index){
+    return;
+}
+
+template <>
+__forceinline__ __device__ void sort_elements_and_index<2>(float* value, int* index){
+    if(value[0] < value[1]){
+        my_util::swap(&value[0], &value[1]);
+        my_util::swap(&index[0], &index[1]);
+    }
+    return;
+}
+
+template <>
+__forceinline__ __device__ void sort_elements_and_index<4>(float* value, int* index){
+    sort_elements_and_index<2>(value, index);
+    sort_elements_and_index<2>(value + 2, index + 2);
+    if(value[0] < value[2]){
+        my_util::swap(&value[0], &value[2]);
+        my_util::swap(&index[0], &index[2]);
+    }
+    if(value[1] < value[3]){
+        my_util::swap(&value[1], &value[3]);
+        my_util::swap(&index[1], &index[3]);
+    }
+    if(value[1] < value[2]){
+        my_util::swap(&value[1], &value[2]);
+        my_util::swap(&index[1], &index[2]);
+    }
+}
+
 //warp per token
-/
+//先排序自己的一些数据
 __global__ void select_topk(float* logits, int num_tokens, int num_experts, int* out ,int topk){
     
+    
+    int tid = threadIdx.x;
+    int lid = tid & 31;
+    int wid = tid >> 5;
+    int block_index = blockIdx.y;
+
+    int warp_per_block = 4;
+    int warp_index =  wid + block_index * warp_per_block;
+    constexpr int items_per_thread = 4;
+
+    float* block_start =  logits + block_index * num_experts * warp_per_block;
+    float* warp_start = block_start + wid * num_experts;
+    
+
+    //load
+    float r_num[4];
+    int r_index[4] = {0, 1, 2, 3};
+    FLOAT4(r_num[0]) = FLOAT4(warp_start[lid*items_per_thread]);
+
+    //sort step 1
+    //single function
+    sort_elements_and_index<items_per_thread>(r_num, r_index);
+    
+
+    //sort step 2
+    //how to decide bigger topk between threads
+    //还是可以warp_reduce_max来做，
+    //这个还真是不好用fabsf来算，只能把数字返回回来。就是调换的时候换回来，一个新的数组吧，
+    int k = 0;
+    int cur_index =  0;
+    while(k < topk){
+
+        if(cur_index == items_per_thread){
+            continue;;
+        }
+        float value  = r_num[cur_index];
+        float warp_max = warp_reduce_max(value);
+        
+        //per thread to execute
+        if(fabsf(value - warp_max) < 1e-9){
+            out[warp_index * topk + k] = r_index[cur_index+ lid* items_per_thread];
+        }
+
+        k++;
+    }
+    
+
+    return;
     
     
 };
@@ -93,8 +239,10 @@ int main(void) {
     const int num_tokens = 8;
     const int topk = TOPK;
 
-    dim3 block_size(num_experts);
-    dim3 grid_size(1, num_tokens);
+    const int threads_per_block = 256;
+    const int token_per_block = threads_per_block/32;
+    dim3 block_size(threads_per_block);
+    dim3 grid_size(1, (num_tokens+token_per_block-1)/token_per_block);
 
     const size_t logits_bytes = (size_t)num_tokens * num_experts * sizeof(float);
     const size_t out_bytes = (size_t)num_tokens * topk * sizeof(int);
