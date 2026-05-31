@@ -70,8 +70,9 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 
         __syncthreads();
 
-        if(fabsf(cur_value - sm[0]) < 1e-4 ){
-            out[k] = lid + wid * warp_size;
+        if(fabsf(cur_value - sm[0]) < 1e-9 ){
+            printf( "i am here, k: %d, token index: %d \n", k, blockIdx.y);
+            out[blockIdx.y * topk + k] = lid + wid * warp_size;
             cur_value = -INFINITY;
         }
 
