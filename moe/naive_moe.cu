@@ -85,8 +85,7 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 };
 
 
-#define TOPK 1
-
+#define TOPK 2
 // logits layout: [num_tokens, num_experts]
 void init_logits(float* logits, int num_tokens, int num_experts) {
     for (int t = 0; t < num_tokens; ++t) {
