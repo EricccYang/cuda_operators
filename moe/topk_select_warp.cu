@@ -11,7 +11,6 @@
 
 
 __forceinline__  __device__ float warp_reduce_max(float val){
-
     #pragma unroll
     for(int offset = 16; offset > 0 ; offset >>= 1){
         val = fmaxf(val,  __shfl_down_sync(0xffffffff, val, offset));
@@ -20,68 +19,12 @@ __forceinline__  __device__ float warp_reduce_max(float val){
 };
 
 
-
+//warp per token
+/
 __global__ void select_topk(float* logits, int num_tokens, int num_experts, int* out ,int topk){
     
     
-    int tid = threadIdx.x;
-    int wid = tid >> 5;
-    int lid = tid & 31;
-
-    constexpr int warp_size = 32;
-
-    float* block_start = logits + blockIdx.y *  NUM_EXPERTS ;
-    float* warp_start  = block_start + wid * warp_size;
-
     
-    //怎么比较呢？
-    //fmax ,然后跑k次，应该也可以，先这么写着再说
-    //对啊，怎么拿到index呢哥,
-    //怎么把最大mask掉呢？
-    //置成最小值，
-    
-
-    //max
-    float cur_value = warp_start[lid];
-    __shared__  float sm[NUM_EXPERTS/warp_size];
-
-
-    int k = 0;
-    while(k < topk){
-        
-        float warp_max = warp_reduce_max(cur_value);
-        if(lid == 0){
-            sm[wid] = warp_max;
-            printf("warp_max: %f , warp index: %d , token index: %d \n", warp_max, wid, blockIdx.y);
-        }  
-
-        __syncthreads();
-
-        float block_max =  0.f;
-
-        if(wid == 0){
-            float val = lid < blockDim.x/warp_size ?  sm[lid] : 0.f;
-            block_max = warp_reduce_max(val);
-            sm[0] =  block_max;
-            if(lid == 0){
-                printf("block_max: %f , block index: %d , token index: %d \n", block_max, lid, blockIdx.y);
-            }
-        }
-
-        __syncthreads();
-
-        if(fabsf(cur_value - sm[0]) < 1e-9 ){
-            printf( "i am here, k: %d, token index: %d \n", k, blockIdx.y);
-            out[blockIdx.y * topk + k] = lid + wid * warp_size;
-            cur_value = -INFINITY;
-        }
-
-        k++;
-    }
-
-    return;
-
-
 };
 
 
