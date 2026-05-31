@@ -1,7 +1,8 @@
-#include "iostream"
-#include "cuda_runtime.h"
-#include <thread>
-// #include ""
+#include <cuda_runtime.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cfloat>
 
 
 
@@ -77,36 +78,119 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 };
 
 
-#define N 1024
 #define TOPK 8
 
-int main(void){
+// logits layout: [num_tokens, num_experts]
+void init_logits(float* logits, int num_tokens, int num_experts) {
+    for (int t = 0; t < num_tokens; ++t) {
+        for (int e = 0; e < num_experts; ++e) {
+            logits[t * num_experts + e] = (float)(t * 13 + e) * 0.01f;
+        }
+    }
+}
 
+// CPU reference: iterative argmax with lower-index tie-break.
+// out layout: [num_tokens, topk]
+void select_topk_cpu_ref(const float* logits, int num_tokens, int num_experts,
+                         int* out, int topk) {
+    for (int t = 0; t < num_tokens; ++t) {
+        const float* row = logits + t * num_experts;
+        bool picked[NUM_EXPERTS] = {};
+
+        for (int k = 0; k < topk; ++k) {
+            int best_e = -1;
+            float best_v = -INFINITY;
+            for (int e = 0; e < num_experts; ++e) {
+                if (picked[e]) continue;
+                if (best_e < 0 || row[e] > best_v ||
+                    (row[e] == best_v && e < best_e)) {
+                    best_v = row[e];
+                    best_e = e;
+                }
+            }
+            picked[best_e] = true;
+            out[t * topk + k] = best_e;
+        }
+    }
+}
+
+// Compare GPU output against CPU reference.
+// Returns true if every token's top-k indices match.
+bool check_topk_result(const int* gpu_out, const int* cpu_ref, int num_tokens,
+                       int topk) {
+    bool ok = true;
+    for (int t = 0; t < num_tokens; ++t) {
+        for (int k = 0; k < topk; ++k) {
+            int g = gpu_out[t * topk + k];
+            int c = cpu_ref[t * topk + k];
+            if (g != c) {
+                printf("Mismatch at token=%d k=%d: gpu=%d cpu=%d\n", t, k, g, c);
+                ok = false;
+            }
+        }
+    }
+    if (ok) {
+        printf("Top-K result matches CPU reference.\n");
+    }
+    return ok;
+}
+
+int main(void) {
     printf("Starting...\n");
-    int dev =0;
-    cudaSetDevice(dev);
+    cudaSetDevice(0);
 
+    const int num_experts = NUM_EXPERTS;
+    const int num_tokens = 8;
+    const int topk = TOPK;
 
+    dim3 block_size(num_experts);
+    dim3 grid_size(1, num_tokens);
 
-    dim3 block_size(128); 
-    dim3 grid_size(1, (N+block_size.x-1)/block_size.x);
+    const size_t logits_bytes = (size_t)num_tokens * num_experts * sizeof(float);
+    const size_t out_bytes = (size_t)num_tokens * topk * sizeof(int);
 
-    int nBytes = N*sizeof(float);
+    float* h_logits = (float*)malloc(logits_bytes);
+    int* h_gpu_out = (int*)malloc(out_bytes);
+    int* h_cpu_ref = (int*)malloc(out_bytes);
+    if (!h_logits || !h_gpu_out || !h_cpu_ref) {
+        printf("Host malloc failed.\n");
+        return 1;
+    }
 
-    float* a ;
-    cudaMalloc((float**)&a, nBytes);
-    float* host_a = (float*)malloc(nBytes);
-    memset(host_a, 0, nBytes);
-    cudaMemcpy(a, host_a,nBytes, cudaMemcpyHostToDevice);
+    init_logits(h_logits, num_tokens, num_experts);
+    select_topk_cpu_ref(h_logits, num_tokens, num_experts, h_cpu_ref, topk);
+    memset(h_gpu_out, -1, out_bytes);
 
-    
-    int* out;
-    cudaMalloc((int**)&out, (N/128)* TOPK* sizeof(int));
+    float* d_logits = nullptr;
+    int* d_out = nullptr;
+    cudaMalloc(&d_logits, logits_bytes);
+    cudaMalloc(&d_out, out_bytes);
+    cudaMemcpy(d_logits, h_logits, logits_bytes, cudaMemcpyHostToDevice);
+    cudaMemset(d_out, -1, out_bytes);
 
+    select_topk<<<grid_size, block_size>>>(d_logits, num_tokens, num_experts,
+                                           d_out, topk);
 
-    select_topk<<<grid_size,block_size>>>(a, N/128 ,128, out, TOPK);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
+        return 1;
+    }
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        printf("Kernel execution failed: %s\n", cudaGetErrorString(err));
+        return 1;
+    }
 
-    return 0;
+    cudaMemcpy(h_gpu_out, d_out, out_bytes, cudaMemcpyDeviceToHost);
 
+    bool passed = check_topk_result(h_gpu_out, h_cpu_ref, num_tokens, topk);
 
+    cudaFree(d_logits);
+    cudaFree(d_out);
+    free(h_logits);
+    free(h_gpu_out);
+    free(h_cpu_ref);
+
+    return passed ? 0 : 1;
 }
