@@ -86,7 +86,7 @@ void init_logits(float* logits, int num_tokens, int num_experts) {
     for (int t = 0; t < num_tokens; ++t) {
         for (int e = 0; e < num_experts; ++e) {
             // 让每个 token 的起始值不同，每个 expert 连续递增
-            logits[t * num_experts + e] = 0.01f * (t * num_experts + e);
+            logits[t * num_experts + e] = 1.0f * (t * num_experts + e);
         }
     }
 }
