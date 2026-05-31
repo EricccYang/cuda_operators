@@ -64,7 +64,8 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 
         __syncthreads();
 
-        if(fabs(cur_value - block_max) < 1e-9 ){
+        printf("  cur_value is %d", cur_value);
+        if(fabs(cur_value - block_max) < 1e-4 ){
             out[k] = lid + wid * warp_size;
             cur_value = -INFINITY;
         }
