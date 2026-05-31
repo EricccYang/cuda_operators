@@ -62,12 +62,13 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
         if(wid == 0){
             float val = lid < blockDim.x/warp_size ?  sm[lid] : 0.f;
             block_max = warp_reduce_max(val);
+            sm[0] =  block_max;
             printf("block_max: %f , block index: %d , token index: %d \n", block_max, lid, blockIdx.y);
         }
 
         __syncthreads();
 
-        if(fabsf(cur_value - block_max) < 1e-4 ){
+        if(fabsf(cur_value - sm[0]) < 1e-4 ){
             out[k] = lid + wid * warp_size;
             cur_value = -INFINITY;
         }
