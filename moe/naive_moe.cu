@@ -44,11 +44,12 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 
     //max
     float cur_value = warp_start[lid];
+    __shared__  float sm[NUM_EXPERTS/warp_size];
 
 
     int k = 0;
     while(k < topk){
-        __shared__  float sm[NUM_EXPERTS/warp_size];
+        
         float warp_max = warp_reduce_max(cur_value);
         if(lid == 0){
             sm[wid] = warp_max;
@@ -85,7 +86,7 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
 };
 
 
-#define TOPK 2
+#define TOPK 8
 // logits layout: [num_tokens, num_experts]
 void init_logits(float* logits, int num_tokens, int num_experts) {
     for (int t = 0; t < num_tokens; ++t) {
