@@ -51,8 +51,8 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
         float warp_max = warp_reduce_max(cur_value);
         if(lid == 0){
             sm[wid] = warp_max;
-            printf("warp_max: %f\n, warp index: %d", warp_max, wid);
-        }
+            printf("warp_max: %f\n, warp index: %d \n", warp_max, wid);
+        }  
 
         __syncthreads();
 
