@@ -26,7 +26,7 @@ __forceinline__ __device__  float warp_reduce_max(float val ,int index, int* ind
     
     #pragma unroll
     for(int offset = 16; offset > 0 ; offset >>= 1){
-        int other_value = __shfl_down_sync(0xffffffff, val, offset);
+        float other_value = __shfl_down_sync(0xffffffff, val, offset);
         if(other_value > val){
             val = other_value;
             *index_out = __shfl_down_sync(0xffffffff, index, offset);
