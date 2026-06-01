@@ -28,7 +28,7 @@ __forceinline__ __device__  float warp_reduce_max(float val ,int index, int* ind
     for(int offset = 16; offset > 0 ; offset >>= 1){
         float other_value = __shfl_xor_sync(0xffffffff, val, offset);
         int other_index = __shfl_xor_sync(0xffffffff, index, offset);
-        if(other_value > val){
+        if(other_value > val || (other_value == val && other_index < index)){
             val = other_value;
             index = other_index;
         }
@@ -174,7 +174,7 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
         int lid_index =  r_index[cur_index]+ lid * items_per_thread;
         int res_index = 0;
         float warp_max = warp_reduce_max(value,lid_index,&res_index);
-        printf(" warp_max: %f, value: %f, index: %d \n", warp_max, value, res_index);
+        // printf(" warp_max: %f, value: %f, index: %d \n", warp_max, value, res_index);
         
         //per thread to execute
         if( lid  == 0   ){
