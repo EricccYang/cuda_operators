@@ -26,11 +26,13 @@ __forceinline__ __device__  float warp_reduce_max(float val ,int index, int* ind
     
     #pragma unroll
     for(int offset = 16; offset > 0 ; offset >>= 1){
-        float other_value = __shfl_down_sync(0xffffffff, val, offset);
+        float other_value = __shfl_xor_sync(0xffffffff, val, offset);
+        int other_index = __shfl_xor_sync(0xffffffff, index, offset);
         if(other_value > val){
             val = other_value;
-            *index_out = __shfl_down_sync(0xffffffff, index, offset);
+            index = other_index;
         }
+        *index_out = index;
     }
     return val;
 };
@@ -177,6 +179,10 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
         //per thread to execute
         if( lid  == 0   ){
             out[warp_index * topk + k] = res_index;
+        }
+
+        //还真是，真的有问题，是这样的
+        if (lid_index == res_index) {
             cur_index++;
         }
         k++;
