@@ -181,7 +181,7 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
             out[warp_index * topk + k] = res_index;
         }
 
-        //还真是，真的有问题，是这样的
+        
         if (lid_index == res_index) {
             cur_index++;
         }
