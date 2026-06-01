@@ -169,8 +169,9 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
             continue;;
         }
         float value  = r_num[cur_index];
-        int res_index =  r_index[cur_index]+ lid * items_per_thread;
-        float warp_max = warp_reduce_max(value,res_index,&res_index);
+        int lid_index =  r_index[cur_index]+ lid * items_per_thread;
+        int res_index = 0;
+        float warp_max = warp_reduce_max(value,lid_index,&res_index);
         printf(" warp_max: %f, value: %f, index: %d \n", warp_max, value, res_index);
         
         //per thread to execute
