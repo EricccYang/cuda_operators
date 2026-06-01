@@ -22,6 +22,18 @@ __forceinline__  __device__ float warp_reduce_max(float val){
     return val;
 };
 
+__forceinline__ __device__  float warp_reduce_max(float val ,int index, int* index_out){
+    
+    #pragma unroll
+    for(int offset = 16; offset > 0 ; offset >>= 1){
+        int other_value = __shfl_down_sync(0xffffffff, val, offset);
+        if(other_value > val){
+            val = other_value;
+            *index_out = __shfl_down_sync(0xffffffff, index, offset);
+        }
+    }
+    return val;
+};
 
 
 namespace my_util{
@@ -157,12 +169,13 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
             continue;;
         }
         float value  = r_num[cur_index];
-        float warp_max = warp_reduce_max(value);
-        printf(" warp_max: %f, value: %f, index: %d \n", warp_max, value, r_index[cur_index]+ lid * items_per_thread);
+        int res_index =  r_index[cur_index]+ lid * items_per_thread;
+        float warp_max = warp_reduce_max(value,res_index,&res_index);
+        printf(" warp_max: %f, value: %f, index: %d \n", warp_max, value, res_index);
         
         //per thread to execute
-        if(fabsf(value - warp_max) < 1e-9){
-            out[warp_index * topk + k] = r_index[cur_index]+ lid * items_per_thread;
+        if(res_index == lid){
+            out[warp_index * topk + k] = res_index;
             cur_index++;
         }
         k++;
