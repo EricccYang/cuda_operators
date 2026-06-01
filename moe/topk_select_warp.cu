@@ -175,7 +175,7 @@ __global__ void select_topk(float* logits, int num_tokens, int num_experts, int*
         printf(" warp_max: %f, value: %f, index: %d \n", warp_max, value, res_index);
         
         //per thread to execute
-        if(res_index == lid){
+        if(res_index == lid_index){
             out[warp_index * topk + k] = res_index;
             cur_index++;
         }
