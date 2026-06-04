@@ -142,7 +142,7 @@ __global__ void permute_topk(float* table, int seq_len, int topk, int* expert_to
     //暂时先不处理多的情况
 
     int token_id = threadIdx.x;
-    float* block_start =  blockDim.x*topk *  blockIdx.y;
+    float* block_start = table +  blockDim.x*topk *  blockIdx.y;
     float* thread_start = block_start+ token_id* topk;
 
     bool matched = false;
