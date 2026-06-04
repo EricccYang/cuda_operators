@@ -157,7 +157,7 @@ __global__ void permute_topk(float* table, int seq_len, int topk, int* expert_to
     //sm，有个sm做聚合？
     //好像一个数字就可以，不就是这个experts的数量吗？
     if(matched){
-        atomicAdd(&count,1);
+        atomicAdd(&count[0],1);
     }
 
     __syncthreads();
