@@ -165,7 +165,7 @@ __global__ void permute_topk(float* table, int seq_len, int topk, int* expert_to
     
     //写global呗，貌似是这样的吧？
     //写啥呢？当然是写自己这个block的对应的数字写进去，先出一个表呗
-    expert_token_count_arr[experts_index] = count;
+    expert_token_count_arr[experts_index] = count[0];
 
 
 
