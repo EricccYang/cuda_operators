@@ -282,7 +282,7 @@ int main(void) {
     cudaMemset(d_out, -1, out_bytes);
 
     permute_topk<<<grid_size, block_size>>>(d_logits, num_tokens, num_experts,
-                                           d_out, topk);
+                                           d_out);
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
