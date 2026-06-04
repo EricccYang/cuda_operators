@@ -136,7 +136,7 @@ __forceinline__ __device__ void sort_elements_and_index<4>(float* value, int* in
 __global__ void permute_topk(float* table, int seq_len, int topk, int* expert_token_count_arr){
     
     
-    __shared__ int count = 0 ;
+    __shared__ int count[1]{0};
     
     int experts_index = blockIdx.y;
     //暂时先不处理多的情况
