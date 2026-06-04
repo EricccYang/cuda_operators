@@ -275,7 +275,7 @@ int main(void) {
     cudaMemcpy(d_logits, h_logits, logits_bytes, cudaMemcpyHostToDevice);
     cudaMemset(d_out, -1, out_bytes);
 
-    select_topk<<<grid_size, block_size>>>(d_logits, num_tokens, num_experts,
+    permute_topk<<<grid_size, block_size>>>(d_logits, num_tokens, num_experts,
                                            d_out, topk);
 
     cudaError_t err = cudaGetLastError();
