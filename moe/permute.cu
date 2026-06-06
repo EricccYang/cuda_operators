@@ -237,7 +237,6 @@ bool check_count_result(const int* gpu_counts, const int* cpu_ref,
     return ok;
 }
 
-int main(void) {
     printf("Starting...\n");
     cudaSetDevice(0);
 
@@ -247,7 +246,7 @@ int main(void) {
     // kernel 意图：token_id = threadIdx.x，一个线程恰好一个 token，
     // 没有 stride 循环也没有越界判断 —— 所以全部 token 必须装进一个 block。
     // => blockDim.x == seq_len，且 seq_len <= 1024（单 block 线程上限）。
-    const int seq_len = 256;
+    const int seq_len = 256*8;
     const int threads_per_block = 256;   // 一线程一 token
     dim3 block_size(threads_per_block); //确实是横着的
     // gridDim.y = num_experts：一个 block 负责一个 expert（blockIdx.y）
