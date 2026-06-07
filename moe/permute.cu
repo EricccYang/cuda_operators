@@ -237,6 +237,7 @@ bool check_count_result(const int* gpu_counts, const int* cpu_ref,
     return ok;
 }
 
+int main() {
     printf("Starting...\n");
     cudaSetDevice(0);
 
