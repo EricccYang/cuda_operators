@@ -17,7 +17,10 @@ __global__ void prefix_sum(int* source, int len){
     __shared__ int sm[32];
     
     for(int offset = 1; offset < 32; offset <<= 1){
-        val += __shfl_up_sync(0xffffffff, val, offset);
+        int v = __shfl_up_sync(0xffffffff, val, offset);
+        if(lid >= offset){
+            val += v;
+        }
     }
 
     if(lid  == 31){
@@ -29,7 +32,10 @@ __global__ void prefix_sum(int* source, int len){
     if(wid  == 0){
         int t = sm[lid];
         for(int offset = 1; offset < 32; offset <<= 1){
-            t += __shfl_up_sync(0xffffffff, t, offset);
+            int v = __shfl_up_sync(0xffffffff, t, offset);
+            if(lid >= offset){
+                t += v;
+            }
         }
         sm[tid] = t;
     }
