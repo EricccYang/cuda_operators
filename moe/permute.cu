@@ -171,8 +171,10 @@ __global__ void permute_topk(int* table, int seq_len, int topk, int* expert_toke
 
     //写global呗，貌似是这样的吧？
     //写啥呢？当然是写自己这个block的对应的数字写进去，先出一个表呗
-    int c = count[0];
-    atomicAdd(&expert_token_count_arr[experts_index], c);
+    if(threadIdx.x == 0){
+        int c = count[0];
+        atomicAdd(&expert_token_count_arr[experts_index], c);
+    }
 
 
 
