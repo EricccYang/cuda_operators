@@ -2,7 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-#define NUM_EXPERTS 128
+#define N 128   // 元素个数：单 block，blockDim==N，且为 32 的倍数
 
 __global__ void prefix_sum(int* source, int len){
 
@@ -44,37 +44,6 @@ __global__ void prefix_sum(int* source, int len){
 };
 
 
-#define TOPK 4
-
-// 构造路由表 table[seq_len][topk]：每个 token 选 topk 个“互不相同”的 expert。
-// 用确定性的方式生成，方便和 CPU 参考对拍。
-void init_routing_table(int* table, int seq_len, int topk, int num_experts) {
-    for (int t = 0; t < seq_len; ++t) {
-        for (int k = 0; k < topk; ++k) {
-            int e = (t * topk + k) % num_experts;   // 同一 token 内尽量错开
-            table[t * topk + k] = e;
-        }
-    }
-}
-
-// CPU 参考：和 kernel 语义一致 —— 同一 token 命中某 expert 只算一次。
-// counts layout: [num_experts]
-void count_experts_cpu_ref(const int* table, int seq_len, int topk,
-                           int num_experts, int* counts) {
-    for (int e = 0; e < num_experts; ++e) {
-        int c = 0;
-        for (int t = 0; t < seq_len; ++t) {
-            const int* row = table + t * topk;
-            bool matched = false;
-            for (int k = 0; k < topk; ++k) {
-                if (row[k] == e) { matched = true; break; }
-            }
-            if (matched) ++c;
-        }
-        counts[e] = c;
-    }
-}
-
 // CPU 参考 scan —— inclusive，和当前 kernel 的语义对齐
 // （out[i] = in[0] + ... + in[i]）。
 // 注意：MoE 真正要的 offset 是 exclusive；等 kernel 跑通后把 kernel 改成
@@ -102,41 +71,32 @@ int main() {
     printf("Starting...\n");
     cudaSetDevice(0);
 
-    const int num_experts = NUM_EXPERTS;
-    const int topk = TOPK;
+    const int n = N;
 
-    // 路由表规模：只用来在 CPU 端造一份真实的 per-expert count 当 scan 输入。
-    const int seq_len = 256*8;
-
-    // prefix_sum 是 block 内 scan：num_experts(=128) 个元素全塞进一个 block。
-    // blockDim.x == num_experts，单 block，gridDim.x == 1。
-    dim3 block_size(num_experts);
+    // 单 block scan：blockDim==n，gridDim==1。
+    dim3 block_size(n);
     dim3 grid_size(1);
 
+    const size_t bytes = (size_t)n * sizeof(int);
 
-    const size_t table_bytes = (size_t)seq_len * topk * sizeof(int);
-    const size_t count_bytes = (size_t)num_experts * sizeof(int);
-
-    int* h_table    = (int*)malloc(table_bytes);
-    int* h_counts   = (int*)malloc(count_bytes);   // scan 的输入：每个 expert 的行数
-    int* h_scan_ref = (int*)malloc(count_bytes);   // CPU 参考 scan
-    int* h_gpu_scan = (int*)malloc(count_bytes);   // GPU 跑出来的 scan
-    if (!h_table || !h_counts || !h_scan_ref || !h_gpu_scan) {
+    int* h_in       = (int*)malloc(bytes);   // scan 输入
+    int* h_scan_ref = (int*)malloc(bytes);   // CPU 参考
+    int* h_gpu_scan = (int*)malloc(bytes);   // GPU 结果
+    if (!h_in || !h_scan_ref || !h_gpu_scan) {
         printf("Host malloc failed.\n");
         return 1;
     }
 
-    // 造输入 + CPU 参考
-    init_routing_table(h_table, seq_len, topk, num_experts);
-    count_experts_cpu_ref(h_table, seq_len, topk, num_experts, h_counts);
-    prefix_sum_cpu_ref(h_counts, h_scan_ref, num_experts);
+    // 造各不相同的输入，让每个前缀唯一，错位立刻暴露
+    for (int i = 0; i < n; ++i) h_in[i] = i + 1;   // 1,2,3,... -> 前缀是三角数
+    prefix_sum_cpu_ref(h_in, h_scan_ref, n);
 
-    // device: 把 count 拷上去，原地做 scan
-    int* d_counts = nullptr;
-    cudaMalloc(&d_counts, count_bytes);
-    cudaMemcpy(d_counts, h_counts, count_bytes, cudaMemcpyHostToDevice);
+    // device: 把输入拷上去，原地做 scan
+    int* d_in = nullptr;
+    cudaMalloc(&d_in, bytes);
+    cudaMemcpy(d_in, h_in, bytes, cudaMemcpyHostToDevice);
 
-    prefix_sum<<<grid_size, block_size>>>(d_counts, num_experts);
+    prefix_sum<<<grid_size, block_size>>>(d_in, n);
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -149,13 +109,12 @@ int main() {
         return 1;
     }
 
-    cudaMemcpy(h_gpu_scan, d_counts, count_bytes, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_gpu_scan, d_in, bytes, cudaMemcpyDeviceToHost);
 
-    bool passed = check_scan_result(h_gpu_scan, h_scan_ref, num_experts);
+    bool passed = check_scan_result(h_gpu_scan, h_scan_ref, n);
 
-    cudaFree(d_counts);
-    free(h_table);
-    free(h_counts);
+    cudaFree(d_in);
+    free(h_in);
     free(h_scan_ref);
     free(h_gpu_scan);
 
