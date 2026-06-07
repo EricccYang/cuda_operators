@@ -35,11 +35,11 @@ __global__ void prefix_sum(int* source, int len){
     }
     __syncthreads();
 
+    int sum_val = 0;
     if(wid > 0){
-        int sum_val = sm[wid-1];
-        s[0] = val + sum_val;
+        sum_val = sm[wid-1];  
     }
-
+    s[0] = val + sum_val;
 
 };
 
