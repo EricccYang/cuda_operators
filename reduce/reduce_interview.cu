@@ -145,7 +145,6 @@ __device__ float block_reduce_max(float val, float* sm){
     __syncthreads();
     return s[0];
 
-
 }
 
 
