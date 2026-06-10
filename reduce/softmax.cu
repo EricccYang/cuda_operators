@@ -66,7 +66,7 @@ __forceinline__ __device__  float block_reduce_sum(float val, float* sm){
 __forceinline__ __device__ float block_reduce_max(float val, float* sm){
         
     int lid = threadIdx.x & 31;
-    int wid = threadIdx.x >> 5;
+    int wid = threadIdx.x >> 2;
     
     float warp_sum = warp_reduce_max(val);
     if(lid == 0){
