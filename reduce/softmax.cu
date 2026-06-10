@@ -171,87 +171,146 @@ bool check_softmax_result(const float* gpu, const float* ref,
     return ok;
 }
 
+// 静默对拍：返回是否通过，并带出最大绝对误差。
+static bool compare_quiet(const float* gpu, const float* ref, size_t cnt,
+                          float atol, float rtol, double* max_err_out){
+    double max_abs = 0.0;
+    bool ok = true;
+    for(size_t i = 0; i < cnt; ++i){
+        double g = gpu[i], e = ref[i];
+        double abs_err = fabs(g - e);
+        if(abs_err > max_abs) max_abs = abs_err;
+        if(abs_err > atol + rtol * fabs(e)) ok = false;
+    }
+    *max_err_out = max_abs;
+    return ok;
+}
+
+// 用小 rows 校验某个 D 的正确性（CPU 参考成本可控）。d_in 已含 h_in 的同份数据。
+static bool verify_case(float* d_in, float* d_out, const float* h_in,
+                        int D, int threads, double* max_err_out){
+    const int rows_v = 64;
+    const size_t cnt = (size_t)rows_v * D;
+    float* h_ref = (float*)malloc(cnt * sizeof(float));
+    float* h_gpu = (float*)malloc(cnt * sizeof(float));
+
+    softmax_cpu_ref(h_in, h_ref, rows_v, D);
+    softmax<<<dim3(rows_v), dim3(threads)>>>(d_in, d_out, D);
+    if(cudaDeviceSynchronize() != cudaSuccess){
+        free(h_ref); free(h_gpu); *max_err_out = -1.0; return false;
+    }
+    cudaMemcpy(h_gpu, d_out, cnt * sizeof(float), cudaMemcpyDeviceToHost);
+    bool ok = compare_quiet(h_gpu, h_ref, cnt, 1e-5f, 1e-4f, max_err_out);
+    free(h_ref); free(h_gpu);
+    return ok;
+}
+
+// 计时单个 case：warmup + iters 次，返回平均 ms（出错返回 -1）。
+static double bench_ms(float* d_in, float* d_out, int rows, int D,
+                       int threads, int iters){
+    dim3 grid(rows), block(threads);
+    for(int i = 0; i < 5; ++i) softmax<<<grid, block>>>(d_in, d_out, D);
+    if(cudaDeviceSynchronize() != cudaSuccess) return -1.0;
+
+    cudaEvent_t s, e;
+    cudaEventCreate(&s); cudaEventCreate(&e);
+    cudaEventRecord(s);
+    for(int i = 0; i < iters; ++i) softmax<<<grid, block>>>(d_in, d_out, D);
+    cudaEventRecord(e);
+    cudaEventSynchronize(e);
+    float ms = 0.0f;
+    cudaEventElapsedTime(&ms, s, e);
+    cudaEventDestroy(s); cudaEventDestroy(e);
+    return ms / iters;
+}
+
+// 终端 ASCII 柱状图：柱长按 GB/s 归一化。
+static void print_chart(const char* title, const char* xname,
+                        const long* xs, const double* gbps,
+                        const double* ms, const bool* ok, int n){
+    const int BARW = 40;
+    double maxv = 0.0;
+    for(int i = 0; i < n; ++i) if(gbps[i] > maxv) maxv = gbps[i];
+
+    printf("\n%s   (柱长 ∝ 有效带宽)\n", title);
+    printf("%8s | %-*s %10s %11s %6s\n", xname, BARW, "", "GB/s", "ms/iter", "check");
+    for(int i = 0; i < n; ++i){
+        int len = (maxv > 0.0) ? (int)(gbps[i] / maxv * BARW + 0.5) : 0;
+        char bar[BARW + 1];
+        for(int j = 0; j < BARW; ++j) bar[j] = (j < len) ? '#' : ' ';
+        bar[BARW] = '\0';
+        printf("%8ld | %s %10.1f %11.4f %6s\n",
+               xs[i], bar, gbps[i], ms[i], ok[i] ? "ok" : "FAIL");
+    }
+}
+
 int main(){
-    printf("Starting... rows=%d D=%d threads=%d\n", ROWS, D_LEN, THREADS);
     cudaSetDevice(0);
+    const int threads = THREADS;
+    const int ITERS   = 50;
 
-    const int rows = ROWS;
-    const int D    = D_LEN;
-    const size_t n = (size_t)rows * D;
-    const size_t bytes = n * sizeof(float);
+    // 两个 sweep 里最大的元素数：8192*8192 == 65536*1024 == 67M，按它一次性分配。
+    const size_t MAX_ELEMS = (size_t)65536 * 1024;
+    const size_t max_bytes = MAX_ELEMS * sizeof(float);
 
-    float* h_in      = (float*)malloc(bytes);
-    float* h_ref     = (float*)malloc(bytes);
-    float* h_gpu_out = (float*)malloc(bytes);
-    if(!h_in || !h_ref || !h_gpu_out){
-        printf("Host malloc failed.\n");
-        return 1;
-    }
-
-    // 造确定性输入：[-10, 10] 均匀，含较大量级以考验 max 减法的数值稳定性。
+    float* h_in = (float*)malloc(max_bytes);
+    if(!h_in){ printf("Host malloc failed.\n"); return 1; }
     srand(1234);
-    for(size_t i = 0; i < n; ++i){
+    for(size_t i = 0; i < MAX_ELEMS; ++i)
         h_in[i] = ((float)rand() / RAND_MAX) * 20.0f - 10.0f;
-    }
 
-    // CPU 参考
-    softmax_cpu_ref(h_in, h_ref, rows, D);
-
-    // device 内存
     float* d_in  = nullptr;
     float* d_out = nullptr;
-    cudaMalloc(&d_in,  bytes);
-    cudaMalloc(&d_out, bytes);
-    cudaMemcpy(d_in, h_in, bytes, cudaMemcpyHostToDevice);
-
-    dim3 grid(rows);
-    dim3 block(THREADS);
-
-    // ---- 正确性：跑一次，拷回对拍 ----
-    softmax<<<grid, block>>>(d_in, d_out, D);
-
-    cudaError_t err = cudaGetLastError();
-    if(err != cudaSuccess){
-        printf("Kernel launch failed: %s\n", cudaGetErrorString(err));
+    if(cudaMalloc(&d_in,  max_bytes) != cudaSuccess ||
+       cudaMalloc(&d_out, max_bytes) != cudaSuccess){
+        printf("cudaMalloc failed (需要 ~%.1f GB x2)\n", max_bytes / 1e9);
         return 1;
     }
-    err = cudaDeviceSynchronize();
-    if(err != cudaSuccess){
-        printf("Kernel execution failed: %s\n", cudaGetErrorString(err));
-        return 1;
+    cudaMemcpy(d_in, h_in, max_bytes, cudaMemcpyHostToDevice);
+
+    printf("Softmax sweep | threads=%d, iters=%d\n", threads, ITERS);
+
+    // ---------- Sweep 1: 固定 rows，扫 D ----------
+    {
+        const int  rows = 8192;
+        const long Ds[]  = {128, 256, 512, 1024, 2048, 4096, 8192};
+        const int  N = (int)(sizeof(Ds) / sizeof(Ds[0]));
+        long xs[16]; double gbps[16], ms[16]; bool ok[16];
+
+        for(int k = 0; k < N; ++k){
+            int D = (int)Ds[k];
+            double err = 0.0;
+            ok[k] = verify_case(d_in, d_out, h_in, D, threads, &err);
+            double t = bench_ms(d_in, d_out, rows, D, threads, ITERS);
+            xs[k] = D;
+            ms[k] = t;
+            // 访存型：读 in + 写 out = 2 * rows * D * 4 字节
+            gbps[k] = (t > 0.0) ? (2.0 * rows * D * sizeof(float)) / (t * 1e-3) / 1e9 : 0.0;
+        }
+        print_chart("Sweep 1: 固定 rows=8192，扫 D", "D", xs, gbps, ms, ok, N);
     }
 
-    cudaMemcpy(h_gpu_out, d_out, bytes, cudaMemcpyDeviceToHost);
-    bool passed = check_softmax_result(h_gpu_out, h_ref, rows, D, 1e-5f, 1e-4f);
+    // ---------- Sweep 2: 固定 D，扫 rows ----------
+    {
+        const int  D = 1024;
+        const long Rs[] = {512, 1024, 2048, 4096, 8192, 16384, 32768, 65536};
+        const int  N = (int)(sizeof(Rs) / sizeof(Rs[0]));
+        long xs[16]; double gbps[16], ms[16]; bool ok[16];
 
-    // ---- 性能：warmup + 多次取平均，报告耗时和有效带宽 ----
-    const int WARMUP = 5;
-    const int ITERS  = 50;
-    for(int i = 0; i < WARMUP; ++i) softmax<<<grid, block>>>(d_in, d_out, D);
-    cudaDeviceSynchronize();
+        for(int k = 0; k < N; ++k){
+            int rows = (int)Rs[k];
+            double err = 0.0;
+            ok[k] = verify_case(d_in, d_out, h_in, D, threads, &err);
+            double t = bench_ms(d_in, d_out, rows, D, threads, ITERS);
+            xs[k] = rows;
+            ms[k] = t;
+            gbps[k] = (t > 0.0) ? (2.0 * rows * D * sizeof(float)) / (t * 1e-3) / 1e9 : 0.0;
+        }
+        print_chart("Sweep 2: 固定 D=1024，扫 rows", "rows", xs, gbps, ms, ok, N);
+    }
 
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start);
-    for(int i = 0; i < ITERS; ++i) softmax<<<grid, block>>>(d_in, d_out, D);
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-
-    float ms = 0.0f;
-    cudaEventElapsedTime(&ms, start, stop);
-    double avg_ms = ms / ITERS;
-    // softmax 是访存型：读一遍 in + 写一遍 out = 2 * bytes
-    double gbps = (2.0 * bytes) / (avg_ms * 1e-3) / 1e9;
-    printf("avg %.4f ms/iter, effective BW %.1f GB/s\n", avg_ms, gbps);
-
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
     cudaFree(d_in);
     cudaFree(d_out);
     free(h_in);
-    free(h_ref);
-    free(h_gpu_out);
-
-    return passed ? 0 : 1;
+    return 0;
 }
